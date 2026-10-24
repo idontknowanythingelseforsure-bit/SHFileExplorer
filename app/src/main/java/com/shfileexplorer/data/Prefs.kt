@@ -1,0 +1,106 @@
+package com.shfileexplorer.data
+
+import android.content.Context
+import org.json.JSONArray
+
+class Prefs(context: Context) {
+
+    private val prefs = context.getSharedPreferences("sh_file_explorer", Context.MODE_PRIVATE)
+
+    var sortMode: SortMode
+        get() = runCatching {
+            SortMode.valueOf(prefs.getString(KEY_SORT_MODE, SortMode.NAME.name)!!)
+        }.getOrDefault(SortMode.NAME)
+        set(value) = prefs.edit().putString(KEY_SORT_MODE, value.name).apply()
+
+    var sortAscending: Boolean
+        get() = prefs.getBoolean(KEY_SORT_ASCENDING, true)
+        set(value) = prefs.edit().putBoolean(KEY_SORT_ASCENDING, value).apply()
+
+    var gridMode: Boolean
+        get() = prefs.getBoolean(KEY_GRID, false)
+        set(value) = prefs.edit().putBoolean(KEY_GRID, value).apply()
+
+    var showHidden: Boolean
+        get() = prefs.getBoolean(KEY_HIDDEN, false)
+        set(value) = prefs.edit().putBoolean(KEY_HIDDEN, value).apply()
+
+    var searchSubfolders: Boolean
+        get() = prefs.getBoolean(KEY_SEARCH_SUBFOLDERS, false)
+        set(value) = prefs.edit().putBoolean(KEY_SEARCH_SUBFOLDERS, value).apply()
+
+    var darkTheme: Boolean
+        get() = prefs.getBoolean(KEY_DARK, true)
+        set(value) = prefs.edit().putBoolean(KEY_DARK, value).apply()
+
+    fun favorites(): List<String> =
+        prefs.getStringSet(KEY_FAVORITES, emptySet()).orEmpty().sorted()
+
+    fun toggleFavorite(path: String): Boolean {
+        val current = favorites().toMutableSet()
+        val added = if (current.contains(path)) {
+            current.remove(path)
+            false
+        } else {
+            current.add(path)
+            true
+        }
+        prefs.edit().putStringSet(KEY_FAVORITES, current).apply()
+        return added
+    }
+
+    fun isFavorite(path: String): Boolean = favorites().contains(path)
+
+    fun recentDirectories(): List<String> = decodeList(prefs.getString(KEY_RECENT_DIRS, null))
+
+    fun recentFiles(): List<String> = decodeList(prefs.getString(KEY_RECENT_FILES, null))
+
+    fun rememberDirectory(path: String) {
+        val updated = (listOf(path) + recentDirectories())
+            .distinct()
+            .take(MAX_RECENT)
+        prefs.edit().putString(KEY_RECENT_DIRS, encodeList(updated)).apply()
+    }
+
+    fun rememberFile(path: String) {
+        val updated = (listOf(path) + recentFiles())
+            .distinct()
+            .take(MAX_RECENT)
+        prefs.edit().putString(KEY_RECENT_FILES, encodeList(updated)).apply()
+    }
+
+    fun forgetMissing(paths: Collection<String>) {
+        val dirs = recentDirectories().filterNot { it in paths }
+        val files = recentFiles().filterNot { it in paths }
+        prefs.edit()
+            .putString(KEY_RECENT_DIRS, encodeList(dirs))
+            .putString(KEY_RECENT_FILES, encodeList(files))
+            .apply()
+    }
+
+    private fun encodeList(values: List<String>): String =
+        JSONArray().apply { values.forEach(::put) }.toString()
+
+    private fun decodeList(raw: String?): List<String> {
+        if (raw.isNullOrEmpty()) return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { index ->
+                array.optString(index).takeIf { it.isNotBlank() }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private companion object {
+        const val KEY_SORT_MODE = "sort_mode"
+        const val KEY_SORT_ASCENDING = "sort_ascending"
+        const val KEY_GRID = "grid"
+        const val KEY_HIDDEN = "show_hidden"
+        const val KEY_SEARCH_SUBFOLDERS = "search_subfolders"
+        const val KEY_DARK = "dark_theme"
+        const val KEY_FAVORITES = "favorites"
+        const val KEY_RECENT_DIRS = "recent_dirs"
+        const val KEY_RECENT_FILES = "recent_files"
+        const val MAX_RECENT = 12
+    }
+}
