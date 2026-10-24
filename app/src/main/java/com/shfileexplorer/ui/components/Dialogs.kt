@@ -404,7 +404,7 @@ fun AboutDialog(onDismiss: () -> Unit) {
                     }
                     Spacer(Modifier.width(12.dp))
                     Column {
-                        Text("Version 0.2.0", fontWeight = FontWeight.SemiBold)
+                        Text("Version 0.3.0", fontWeight = FontWeight.SemiBold)
                         Text(
                             "Local-first file manager",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

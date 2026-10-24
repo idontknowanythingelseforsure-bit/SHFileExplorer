@@ -26,6 +26,21 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
 
+enum class PaneId {
+    PRIMARY,
+    SECONDARY,
+}
+
+data class PaneSnapshot(
+    val path: String? = null,
+    val entries: List<FileEntry> = emptyList(),
+    val selection: Set<String> = emptySet(),
+    val loading: Boolean = false,
+    val query: String = "",
+    val searchResults: List<FileEntry> = emptyList(),
+    val searching: Boolean = false,
+)
+
 data class ExplorerUiState(
     val atHome: Boolean = true,
     val currentPath: String? = null,
@@ -46,11 +61,55 @@ data class ExplorerUiState(
     val recentFiles: List<String> = emptyList(),
     val quickLocations: List<BrowserLocation> = emptyList(),
     val stats: StorageStats? = null,
+    val dualPane: Boolean = false,
+    val activePane: PaneId = PaneId.PRIMARY,
+    val secondaryPath: String? = null,
+    val secondaryEntries: List<FileEntry> = emptyList(),
+    val secondarySelection: Set<String> = emptySet(),
+    val secondaryLoading: Boolean = false,
+    val secondaryQuery: String = "",
+    val secondarySearchResults: List<FileEntry> = emptyList(),
+    val secondarySearching: Boolean = false,
 ) {
-    val isSearching: Boolean get() = query.isNotBlank()
+    val primaryPane: PaneSnapshot
+        get() = PaneSnapshot(
+            path = currentPath,
+            entries = entries,
+            selection = selection,
+            loading = loading,
+            query = query,
+            searchResults = searchResults,
+            searching = searching,
+        )
+
+    val secondaryPane: PaneSnapshot
+        get() = PaneSnapshot(
+            path = secondaryPath,
+            entries = secondaryEntries,
+            selection = secondarySelection,
+            loading = secondaryLoading,
+            query = secondaryQuery,
+            searchResults = secondarySearchResults,
+            searching = secondarySearching,
+        )
+
+    fun pane(pane: PaneId): PaneSnapshot =
+        if (pane == PaneId.PRIMARY) primaryPane else secondaryPane
+
+    val activePaneState: PaneSnapshot get() = pane(activePane)
+    val activePath: String? get() = activePaneState.path
+    val activeEntries: List<FileEntry> get() = activePaneState.entries
+    val activeSelection: Set<String> get() = activePaneState.selection
+    val activeLoading: Boolean get() = activePaneState.loading
+    val activeQuery: String get() = activePaneState.query
+    val activeSearchResults: List<FileEntry> get() = activePaneState.searchResults
+    val activeSearching: Boolean get() = activePaneState.searching
+    val isSearching: Boolean get() = activeQuery.isNotBlank()
     val selectedEntries: List<FileEntry>
-        get() = entries.filter { it.path in selection } +
-            searchResults.filter { it.path in selection && entries.none { entry -> entry.path == it.path } }
+        get() = activeEntries.filter { it.path in activeSelection } +
+            activeSearchResults.filter {
+                it.path in activeSelection && activeEntries.none { entry -> entry.path == it.path }
+            }
 }
 
 sealed interface ExplorerEvent {
@@ -71,6 +130,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             grid = prefs.gridMode,
             showHidden = prefs.showHidden,
             searchSubfolders = prefs.searchSubfolders,
+            dualPane = prefs.dualPane,
         ),
     )
     val ui = _ui.asStateFlow()
@@ -78,16 +138,18 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     private val _events = MutableSharedFlow<ExplorerEvent>(extraBufferCapacity = 16)
     val events = _events.asSharedFlow()
 
-    private var searchJob: Job? = null
-    private var loadJob: Job? = null
-    private var searchRequestId = 0
+    private val searchJobs = mutableMapOf<PaneId, Job?>()
+    private val loadJobs = mutableMapOf<PaneId, Job?>()
+    private val searchRequestIds = mutableMapOf<PaneId, Int>()
 
     init {
         refreshHome()
     }
 
     fun refreshHome() {
-        searchRequestId++
+        nextSearchRequest(PaneId.PRIMARY)
+        loadJobs[PaneId.PRIMARY]?.cancel()
+        searchJobs[PaneId.PRIMARY]?.cancel()
         val app = getApplication<Application>()
         val favorites = prefs.favorites().filter { File(it).isDirectory }
         val recentDirs = prefs.recentDirectories().filter { File(it).isDirectory }
@@ -95,6 +157,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         _ui.update {
             it.copy(
                 atHome = true,
+                activePane = PaneId.PRIMARY,
                 currentPath = null,
                 entries = emptyList(),
                 selection = emptySet(),
@@ -111,15 +174,110 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun toggleDualPane() {
+        val state = _ui.value
+        val enabled = !state.dualPane
+        prefs.dualPane = enabled
+        if (!enabled) {
+            _ui.update { it.copy(dualPane = false, activePane = PaneId.PRIMARY) }
+            emitMessage("Dual pane disabled.")
+            return
+        }
+
+        val primaryTarget = state.currentPath ?: StorageLocations.primaryRoot().absolutePath
+        val secondaryTarget = prefs.secondaryPath
+            ?.takeIf { File(it).isDirectory }
+            ?: state.secondaryPath?.takeIf { File(it).isDirectory }
+            ?: primaryTarget
+        _ui.update {
+            it.copy(
+                dualPane = true,
+                activePane = PaneId.PRIMARY,
+                secondaryPath = secondaryTarget,
+            )
+        }
+        if (state.atHome || state.currentPath == null) {
+            _ui.update { it.copy(atHome = false, currentPath = primaryTarget) }
+            openPrimaryDirectory(primaryTarget, remember = false)
+        }
+        openSecondaryDirectory(secondaryTarget, remember = false)
+        emitMessage("Dual pane enabled.")
+    }
+
+    fun setActivePane(pane: PaneId) {
+        if (pane == PaneId.SECONDARY) {
+            val state = _ui.value
+            if (!state.dualPane || state.atHome) return
+            if (state.secondaryPath == null) {
+                val target = state.currentPath ?: return
+                _ui.update { it.copy(secondaryPath = target) }
+                openSecondaryDirectory(target, remember = false)
+            }
+        }
+        setActivePaneInternal(pane)
+    }
+
     fun openDirectory(path: String, remember: Boolean = true) {
-        searchRequestId++
-        loadJob?.cancel()
-        searchJob?.cancel()
-        loadJob = viewModelScope.launch {
-            _ui.update {
+        openDirectoryInPane(_ui.value.activePane, path, remember)
+    }
+
+    fun openDirectoryInPane(pane: PaneId, path: String, remember: Boolean = true) {
+        if (pane == PaneId.SECONDARY && !_ui.value.dualPane) return
+        setActivePaneInternal(pane)
+        if (pane == PaneId.SECONDARY) {
+            openSecondaryDirectory(path, remember)
+        } else {
+            openPrimaryDirectory(path, remember)
+        }
+    }
+
+    private fun openPrimaryDirectory(path: String, remember: Boolean) {
+        nextSearchRequest(PaneId.PRIMARY)
+        loadJobs[PaneId.PRIMARY]?.cancel()
+        searchJobs[PaneId.PRIMARY]?.cancel()
+        loadJobs[PaneId.PRIMARY] = viewModelScope.launch {
+            updatePaneState(PaneId.PRIMARY) {
                 it.copy(
-                    atHome = false,
-                    currentPath = path,
+                    path = path,
+                    entries = emptyList(),
+                    loading = true,
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    selection = emptySet(),
+                )
+            }
+            _ui.update { it.copy(atHome = false) }
+            runCatching { repository.listDirectory(File(path), _ui.value.showHidden) }
+                .onSuccess { entries ->
+                    val sorted = _ui.value.sort.apply(entries)
+                    updatePaneState(PaneId.PRIMARY) {
+                        it.copy(entries = sorted, loading = false, selection = emptySet())
+                    }
+                    if (remember) prefs.rememberDirectory(path)
+                    refreshHomeMetadata()
+                    val state = _ui.value
+                    if (state.dualPane && state.secondaryPath == null) {
+                        openSecondaryDirectory(path, remember = false)
+                    }
+                }
+                .onFailure { failure ->
+                    if (failure is CancellationException) throw failure
+                    updatePaneState(PaneId.PRIMARY) { it.copy(loading = false) }
+                    emitMessage(failure.userMessage())
+                }
+        }
+    }
+
+    private fun openSecondaryDirectory(path: String, remember: Boolean) {
+        if (!_ui.value.dualPane) return
+        nextSearchRequest(PaneId.SECONDARY)
+        loadJobs[PaneId.SECONDARY]?.cancel()
+        searchJobs[PaneId.SECONDARY]?.cancel()
+        loadJobs[PaneId.SECONDARY] = viewModelScope.launch {
+            updatePaneState(PaneId.SECONDARY) {
+                it.copy(
+                    path = path,
                     entries = emptyList(),
                     loading = true,
                     query = "",
@@ -131,51 +289,66 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             runCatching { repository.listDirectory(File(path), _ui.value.showHidden) }
                 .onSuccess { entries ->
                     val sorted = _ui.value.sort.apply(entries)
-                    _ui.update {
-                        it.copy(
-                            entries = sorted,
-                            loading = false,
-                            selection = emptySet(),
-                        )
+                    updatePaneState(PaneId.SECONDARY) {
+                        it.copy(entries = sorted, loading = false, selection = emptySet())
                     }
                     if (remember) prefs.rememberDirectory(path)
-                    refreshHomeMetadata()
+                    prefs.secondaryPath = path
                 }
                 .onFailure { failure ->
                     if (failure is CancellationException) throw failure
-                    _ui.update { it.copy(loading = false) }
+                    updatePaneState(PaneId.SECONDARY) { it.copy(loading = false) }
                     emitMessage(failure.userMessage())
                 }
         }
     }
 
     fun reload() {
-        val path = _ui.value.currentPath ?: return
-        openDirectory(path, remember = false)
+        reloadPane(_ui.value.activePane)
+    }
+
+    private fun reloadPane(pane: PaneId) {
+        val path = _ui.value.pane(pane).path ?: return
+        if (pane == PaneId.SECONDARY) {
+            openSecondaryDirectory(path, remember = false)
+        } else {
+            openPrimaryDirectory(path, remember = false)
+        }
     }
 
     fun goHome() {
-        searchRequestId++
-        loadJob?.cancel()
-        searchJob?.cancel()
         refreshHome()
     }
 
     fun goUp() {
-        val path = _ui.value.currentPath ?: return
+        goUpInPane(_ui.value.activePane)
+    }
+
+    fun goUpInPane(pane: PaneId) {
+        setActivePaneInternal(pane)
+        val path = _ui.value.pane(pane).path ?: return
         val current = File(path)
         if (current.parentFile == null ||
             StorageLocations.isStorageRoot(getApplication(), current.absolutePath)
         ) {
-            goHome()
+            if (pane == PaneId.PRIMARY) {
+                goHome()
+            } else {
+                setActivePaneInternal(PaneId.PRIMARY)
+            }
         } else {
-            openDirectory(current.parentFile!!.absolutePath)
+            openDirectoryInPane(pane, current.parentFile!!.absolutePath)
         }
     }
 
     fun openEntry(entry: FileEntry) {
+        openEntryInPane(_ui.value.activePane, entry)
+    }
+
+    fun openEntryInPane(pane: PaneId, entry: FileEntry) {
+        setActivePaneInternal(pane)
         if (entry.isDirectory) {
-            openDirectory(entry.path)
+            openDirectoryInPane(pane, entry.path)
         } else {
             prefs.rememberFile(entry.path)
             if (entry.isPreviewable) {
@@ -187,35 +360,59 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun navigateToResult(entry: FileEntry) {
+        val pane = _ui.value.activePane
         if (entry.isDirectory) {
-            openDirectory(entry.path)
+            openDirectoryInPane(pane, entry.path)
         } else {
-            openDirectory(File(entry.path).parent ?: return)
+            openDirectoryInPane(pane, File(entry.path).parent ?: return)
         }
     }
 
     fun toggleSelection(path: String) {
-        _ui.update {
-            val selection = if (path in it.selection) it.selection - path else it.selection + path
-            it.copy(selection = selection)
+        toggleSelectionInPane(_ui.value.activePane, path)
+    }
+
+    fun toggleSelectionInPane(pane: PaneId, path: String) {
+        setActivePaneInternal(pane)
+        updatePaneState(pane) { snapshot ->
+            val selection = if (path in snapshot.selection) {
+                snapshot.selection - path
+            } else {
+                snapshot.selection + path
+            }
+            snapshot.copy(selection = selection)
         }
     }
 
     fun selectAll() {
-        _ui.update {
-            val paths = if (it.isSearching) it.searchResults else it.entries
-            it.copy(selection = paths.map(FileEntry::path).toSet())
-        }
+        selectAllInPane(_ui.value.activePane)
+    }
+
+    fun selectAllInPane(pane: PaneId) {
+        setActivePaneInternal(pane)
+        val snapshot = _ui.value.pane(pane)
+        val paths = (if (snapshot.query.isNotBlank()) snapshot.searchResults else snapshot.entries)
+            .map(FileEntry::path)
+            .toSet()
+        updatePaneState(pane) { it.copy(selection = paths) }
     }
 
     fun clearSelection() {
-        _ui.update { it.copy(selection = emptySet()) }
+        clearSelectionInPane(_ui.value.activePane)
+    }
+
+    fun clearSelectionInPane(pane: PaneId) {
+        updatePaneState(pane) { it.copy(selection = emptySet()) }
     }
 
     fun setQuery(rawQuery: String) {
-        searchJob?.cancel()
-        val requestId = ++searchRequestId
-        _ui.update {
+        setQueryInPane(_ui.value.activePane, rawQuery)
+    }
+
+    private fun setQueryInPane(pane: PaneId, rawQuery: String) {
+        searchJobs[pane]?.cancel()
+        val requestId = nextSearchRequest(pane)
+        updatePaneState(pane) {
             it.copy(
                 query = rawQuery,
                 selection = emptySet(),
@@ -224,11 +421,13 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             )
         }
         if (rawQuery.isBlank()) return
-        val root = _ui.value.currentPath ?: return
-        searchJob = viewModelScope.launch {
+        val root = _ui.value.pane(pane).path ?: return
+        searchJobs[pane] = viewModelScope.launch {
             delay(250)
-            if (searchRequestId != requestId || _ui.value.query != rawQuery) return@launch
-            _ui.update { it.copy(searching = true, searchResults = emptyList()) }
+            if (searchRequestIds[pane] != requestId || _ui.value.pane(pane).query != rawQuery) {
+                return@launch
+            }
+            updatePaneState(pane) { it.copy(searching = true, searchResults = emptyList()) }
             val partial = ArrayList<FileEntry>()
             val result = withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
                 repository.search(
@@ -239,24 +438,30 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                     onMatch = { entry ->
                         partial.add(entry)
                         if (partial.size == 1 || partial.size % 12 == 0) {
-                            if (searchRequestId == requestId && _ui.value.query == rawQuery) {
+                            if (searchRequestIds[pane] == requestId &&
+                                _ui.value.pane(pane).query == rawQuery
+                            ) {
                                 val snapshot = partial.toList()
                                 val sort = _ui.value.sort
-                                _ui.update { state -> state.copy(searchResults = sort.apply(snapshot)) }
+                                updatePaneState(pane) {
+                                    it.copy(searchResults = sort.apply(snapshot))
+                                }
                             }
                         }
                     },
                 )
             }
-            if (searchRequestId != requestId || _ui.value.query != rawQuery) return@launch
+            if (searchRequestIds[pane] != requestId || _ui.value.pane(pane).query != rawQuery) {
+                return@launch
+            }
             val sort = _ui.value.sort
             if (result == null) {
-                _ui.update {
+                updatePaneState(pane) {
                     it.copy(searchResults = sort.apply(partial), searching = false)
                 }
                 emitMessage("Search timed out. Try this folder only or a narrower folder.")
             } else {
-                _ui.update {
+                updatePaneState(pane) {
                     it.copy(searchResults = sort.apply(result), searching = false)
                 }
             }
@@ -267,14 +472,20 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         val enabled = !_ui.value.searchSubfolders
         prefs.searchSubfolders = enabled
         _ui.update { it.copy(searchSubfolders = enabled) }
-        val query = _ui.value.query
-        if (query.isNotBlank()) setQuery(query)
+        PaneId.values().forEach { pane ->
+            val query = _ui.value.pane(pane).query
+            if (query.isNotBlank()) setQueryInPane(pane, query)
+        }
     }
 
     fun clearSearch() {
-        searchJob?.cancel()
-        searchRequestId++
-        _ui.update {
+        clearSearchInPane(_ui.value.activePane)
+    }
+
+    private fun clearSearchInPane(pane: PaneId) {
+        searchJobs[pane]?.cancel()
+        nextSearchRequest(pane)
+        updatePaneState(pane) {
             it.copy(
                 query = "",
                 searchResults = emptyList(),
@@ -293,23 +504,23 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         }
         prefs.sortMode = sort.mode
         prefs.sortAscending = sort.ascending
-        _ui.update {
-            it.copy(
-                sort = sort,
-                entries = sort.apply(it.entries),
-                searchResults = sort.apply(it.searchResults),
-            )
-        }
+        applySortToPanes(sort)
     }
 
     fun applySort(sort: SortSpec) {
         prefs.sortMode = sort.mode
         prefs.sortAscending = sort.ascending
+        applySortToPanes(sort)
+    }
+
+    private fun applySortToPanes(sort: SortSpec) {
         _ui.update {
             it.copy(
                 sort = sort,
                 entries = sort.apply(it.entries),
                 searchResults = sort.apply(it.searchResults),
+                secondaryEntries = sort.apply(it.secondaryEntries),
+                secondarySearchResults = sort.apply(it.secondarySearchResults),
             )
         }
     }
@@ -324,7 +535,12 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         val showHidden = !_ui.value.showHidden
         prefs.showHidden = showHidden
         _ui.update { it.copy(showHidden = showHidden) }
-        if (!_ui.value.atHome) reload()
+        if (!_ui.value.atHome) {
+            viewModelScope.launch {
+                reloadPaneNow(PaneId.PRIMARY)
+                if (_ui.value.dualPane) reloadPaneNow(PaneId.SECONDARY)
+            }
+        }
     }
 
     fun toggleFavorite(path: String) {
@@ -334,19 +550,19 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun createFolder(rawName: String) {
-        val parent = _ui.value.currentPath ?: return
+        val parent = _ui.value.activePath ?: return
         runOperation("Creating folder") {
             repository.createFolder(File(parent), rawName)
-            reloadCurrent()
+            reloadVisiblePanesNow()
             emitMessage("Folder created.")
         }
     }
 
     fun createFile(rawName: String) {
-        val parent = _ui.value.currentPath ?: return
+        val parent = _ui.value.activePath ?: return
         runOperation("Creating file") {
             repository.createTextFile(File(parent), rawName)
-            reloadCurrent()
+            reloadVisiblePanesNow()
             emitMessage("File created.")
         }
     }
@@ -354,8 +570,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun rename(path: String, rawName: String) {
         runOperation("Renaming") {
             repository.rename(File(path), rawName)
-            reloadCurrent()
-            clearSelectionInternal()
+            reloadVisiblePanesNow()
             emitMessage("Renamed.")
         }
     }
@@ -366,8 +581,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             repository.delete(paths.map(::File)) { label ->
                 _ui.update { it.copy(operation = OperationState(label)) }
             }
-            reloadCurrent()
-            clearSelectionInternal()
+            reloadVisiblePanesNow()
             refreshHomeMetadata()
             emitMessage(if (paths.size == 1) "Item deleted." else "${paths.size} items deleted.")
         }
@@ -381,7 +595,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     fun paste() {
         val clipboard = _ui.value.clipboard ?: return
-        val destination = _ui.value.currentPath ?: return
+        val destination = _ui.value.activePath ?: return
         runOperation(if (clipboard.cut) "Moving" else "Copying") {
             val sources = clipboard.paths.map(::File).filter { it.exists() }
             if (sources.isEmpty()) {
@@ -398,7 +612,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                 }
             }
             if (clipboard.cut) _ui.update { it.copy(clipboard = null) }
-            reloadCurrent()
+            reloadVisiblePanesNow()
             refreshHomeMetadata()
             emitMessage(if (clipboard.cut) "Moved." else "Copied.")
         }
@@ -409,7 +623,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun compress(paths: Collection<String>) {
-        val destination = _ui.value.currentPath ?: return
+        val destination = _ui.value.activePath ?: return
         if (paths.isEmpty()) return
         runOperation("Compressing") {
             val suggested = if (paths.size == 1) {
@@ -422,13 +636,13 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                 destination = File(destination),
                 archiveName = suggested,
             ) { label -> _ui.update { it.copy(operation = OperationState(label)) } }
-            reloadCurrent()
+            reloadVisiblePanesNow()
             emitMessage("Created ${archive.name}.")
         }
     }
 
     fun extract(paths: Collection<String>) {
-        val destination = _ui.value.currentPath ?: return
+        val destination = _ui.value.activePath ?: return
         if (paths.isEmpty()) return
         runOperation("Extracting") {
             val archives = paths.map(::File).filter {
@@ -440,15 +654,17 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                     _ui.update { it.copy(operation = OperationState(label)) }
                 }
             }
-            reloadCurrent()
+            reloadVisiblePanesNow()
             emitMessage(if (archives.size == 1) "Extracted." else "${archives.size} archives extracted.")
         }
     }
 
     fun share(paths: Collection<String>) {
+        val state = _ui.value
+        val snapshot = state.pane(state.activePane)
         val entries = paths.mapNotNull { path ->
-            _ui.value.entries.firstOrNull { it.path == path }
-                ?: _ui.value.searchResults.firstOrNull { it.path == path }
+            snapshot.entries.firstOrNull { it.path == path }
+                ?: snapshot.searchResults.firstOrNull { it.path == path }
                 ?: File(path).takeIf { it.exists() }?.let(FileEntry::from)
         }.filterNot(FileEntry::isDirectory)
         if (entries.isEmpty()) {
@@ -472,25 +688,70 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private suspend fun reloadCurrent() {
-        val snapshot = _ui.value
-        val path = snapshot.currentPath ?: return
-        val entries = repository.listDirectory(File(path), snapshot.showHidden)
-        val sorted = snapshot.sort.apply(entries)
-        _ui.update {
-            it.copy(
-                entries = sorted,
-                selection = emptySet(),
-            )
+    private suspend fun reloadPaneNow(pane: PaneId) {
+        val snapshot = _ui.value.pane(pane)
+        val path = snapshot.path ?: return
+        val entries = repository.listDirectory(File(path), _ui.value.showHidden)
+        val sorted = _ui.value.sort.apply(entries)
+        updatePaneState(pane) {
+            it.copy(entries = sorted, selection = emptySet(), loading = false)
         }
         prefs.rememberDirectory(path)
-        // Do not make file operations wait for a long subfolder search. The
-        // search restarts in the background and streams refreshed results.
-        if (snapshot.isSearching) setQuery(snapshot.query)
+        if (pane == PaneId.SECONDARY) prefs.secondaryPath = path
+        if (snapshot.query.isNotBlank()) setQueryInPane(pane, snapshot.query)
     }
 
-    private fun clearSelectionInternal() {
-        _ui.update { it.copy(selection = emptySet()) }
+    private suspend fun reloadVisiblePanesNow() {
+        if (_ui.value.atHome) return
+        reloadPaneNow(PaneId.PRIMARY)
+        if (_ui.value.dualPane) reloadPaneNow(PaneId.SECONDARY)
+    }
+
+    private fun setActivePaneInternal(pane: PaneId) {
+        _ui.update { state ->
+            if (pane == PaneId.SECONDARY && !state.dualPane) {
+                state
+            } else if (state.activePane == pane) {
+                state
+            } else if (state.activePane == PaneId.PRIMARY) {
+                state.copy(activePane = pane, selection = emptySet())
+            } else {
+                state.copy(activePane = pane, secondarySelection = emptySet())
+            }
+        }
+    }
+
+    private fun updatePaneState(pane: PaneId, transform: (PaneSnapshot) -> PaneSnapshot) {
+        _ui.update { state ->
+            val updated = transform(state.pane(pane))
+            if (pane == PaneId.PRIMARY) {
+                state.copy(
+                    currentPath = updated.path,
+                    entries = updated.entries,
+                    selection = updated.selection,
+                    loading = updated.loading,
+                    query = updated.query,
+                    searchResults = updated.searchResults,
+                    searching = updated.searching,
+                )
+            } else {
+                state.copy(
+                    secondaryPath = updated.path,
+                    secondaryEntries = updated.entries,
+                    secondarySelection = updated.selection,
+                    secondaryLoading = updated.loading,
+                    secondaryQuery = updated.query,
+                    secondarySearchResults = updated.searchResults,
+                    secondarySearching = updated.searching,
+                )
+            }
+        }
+    }
+
+    private fun nextSearchRequest(pane: PaneId): Int {
+        val requestId = (searchRequestIds[pane] ?: 0) + 1
+        searchRequestIds[pane] = requestId
+        return requestId
     }
 
     private fun runOperation(label: String, block: suspend () -> Unit) {

@@ -29,6 +29,14 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean(KEY_SEARCH_SUBFOLDERS, false)
         set(value) = prefs.edit().putBoolean(KEY_SEARCH_SUBFOLDERS, value).apply()
 
+    var dualPane: Boolean
+        get() = prefs.getBoolean(KEY_DUAL_PANE, false)
+        set(value) = prefs.edit().putBoolean(KEY_DUAL_PANE, value).apply()
+
+    var secondaryPath: String?
+        get() = prefs.getString(KEY_SECONDARY_PATH, null)?.takeIf { it.isNotBlank() }
+        set(value) = prefs.edit().putString(KEY_SECONDARY_PATH, value).apply()
+
     var darkTheme: Boolean
         get() = prefs.getBoolean(KEY_DARK, true)
         set(value) = prefs.edit().putBoolean(KEY_DARK, value).apply()
@@ -97,6 +105,8 @@ class Prefs(context: Context) {
         const val KEY_GRID = "grid"
         const val KEY_HIDDEN = "show_hidden"
         const val KEY_SEARCH_SUBFOLDERS = "search_subfolders"
+        const val KEY_DUAL_PANE = "dual_pane"
+        const val KEY_SECONDARY_PATH = "secondary_path"
         const val KEY_DARK = "dark_theme"
         const val KEY_FAVORITES = "favorites"
         const val KEY_RECENT_DIRS = "recent_dirs"

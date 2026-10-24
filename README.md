@@ -4,7 +4,7 @@ A local-first Android file manager built with Kotlin and Jetpack Compose.
 
 SH File Explorer is an original, independent project. It does not reuse code, assets, icon artwork, themes, or licensing components from other file managers.
 
-Current status: **0.2.0 local feature update**, debug build verified with compile, unit tests, and Android Lint.
+Current status: **0.3.0 dual-pane update**, debug build verified with compile, unit tests, and Android Lint.
 
 ---
 
@@ -14,7 +14,7 @@ The project implements a focused file manager with a useful local-storage core. 
 
 ---
 
-## Features in 0.2.0
+## Features in 0.3.0
 
 ### Browsing
 
@@ -25,6 +25,7 @@ The project implements a focused file manager with a useful local-storage core. 
 - Favorites and recent folders/files.
 - Fast current-folder search by default, with an optional subfolder scope and results streamed in while the search runs.
 - Open any folder in a second app window/task, which can be placed beside the first with Android split-screen or a floating-window-capable launcher.
+- Built-in dual-pane mode with two independent folder panes. Each pane has its own path, navigation, selection, and search; the shared clipboard supports copy/move between panes. Panes appear side by side on wide screens and stacked on narrow screens.
 - Show/hide hidden files.
 - Sort by name, size, modified date, or type; ascending/descending with folders first.
 - Dark-first Material 3 theme with an optional light theme.
@@ -52,7 +53,7 @@ The project implements a focused file manager with a useful local-storage core. 
 - **No `INTERNET` permission.**
 - No analytics, advertising, account system, or telemetry.
 - No cloud, FTP, or network code in this version.
-- The second-window feature is local Android task/window management; it does not open a network connection.
+- The second-window feature is local Android task/window management, and dual-pane mode is local UI state; neither opens a network connection.
 - `android:allowBackup="false"` and backup/device-transfer exclusions.
 - Non-exported `FileProvider`.
 - The app asks for Android's user-managed **All files access** on Android 11+. On older supported versions it requests legacy read/write storage permission.
@@ -98,8 +99,8 @@ Current debug artifact:
 
 | Property | Value |
 |---|---|
-| Size | 16,731,396 bytes |
-| SHA-256 | `1A988628E139CCDD1054CF82371E3DFD1EE82FE25936A5A2EE374C58AF4454CF` |
+| Size | 16,677,060 bytes |
+| SHA-256 | `63A5064E186F3C1871093D14651BBC9F3A850CA7F073E119BD59509EDC1A2A47` |
 
 The hash above will change after any source or resource edit, so recompute it for a new build:
 
@@ -135,7 +136,7 @@ This is a host environment issue, not a project requirement.
 
 ## Test status
 
-Eight JVM unit tests cover the repository layer:
+Ten JVM unit tests cover the repository layer and dual-pane UI state:
 
 - create/copy/move/delete round trip
 - collision-safe copy names
@@ -145,11 +146,13 @@ Eight JVM unit tests cover the repository layer:
 - current-folder vs subfolder search scope, including streamed matches
 - symlink-safe deletion (skipped automatically when the host cannot create symlinks)
 - filename validation
+- active-pane state and selection across the primary and secondary panes
+- selected search results without duplicate entries
 
 Verified on 24 October 2026:
 
 ```text
-:app:testDebugUnitTest   PASSED (8 tests, 7 executed, 1 skipped, 0 failures)
+:app:testDebugUnitTest   PASSED (10 tests, 9 executed, 1 skipped, 0 failures)
 :app:assembleDebug       PASSED
 :app:lintDebug           PASSED
 ```
@@ -189,7 +192,7 @@ app/src/main/
         PermissionScreen.kt         First-run file-access explanation
       theme/Theme.kt                Material 3 palette
   res/                              Original SH icon, theme, strings, FileProvider paths
-app/src/test/                       Repository unit tests
+app/src/test/                       Repository and UI-state unit tests
 docs/                               Roadmap and design notes
 ```
 
@@ -198,7 +201,7 @@ docs/                               Roadmap and design notes
 ## Known limitations
 
 - Local storage only. SMB, FTP/FTPS, SFTP, WebDAV, FTP server mode, cloud providers, and root/Shizuku are not implemented.
-- **Open in new window** creates a second Android task; side-by-side display depends on the device's split-screen or freeform-window support. A built-in dual-pane layout is not implemented yet.
+- **Open in new window** creates a second Android task; side-by-side display depends on the device's split-screen or freeform-window support. The built-in dual-pane mode does not depend on system split-screen.
 - ZIP is the only archive format handled directly. 7z, RAR, TAR, and GZIP are roadmap items.
 - The built-in viewer handles images and videos. PDF, audio, office documents, and other formats still open in installed apps.
 - Video preview depends on codec support in the platform `VideoView`; some containers may open but fail to play.
@@ -207,7 +210,7 @@ docs/                               Roadmap and design notes
 - No SAF tree-picker fallback. Android 11+ requires the All files access grant.
 - Android's platform restrictions still apply to `Android/data` and `Android/obb` for other apps even with All files access.
 - No batch rename, folder encryption, app backup, cast support, FTP server, or cloud account integration yet.
-- No runtime device verification yet. The media viewer, thumbnail scrolling, second-window behavior, and video playback have not been exercised on a physical device or emulator in this environment.
+- No runtime device verification yet. The media viewer, thumbnail scrolling, second-window behavior, dual-pane layout, and video playback have not been exercised on a physical device or emulator in this environment.
 - Volumes with unusual mount paths may need additional handling on OEM devices.
 
 ---

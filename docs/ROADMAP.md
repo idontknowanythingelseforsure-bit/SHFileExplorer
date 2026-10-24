@@ -31,7 +31,7 @@ SH File Explorer is intentionally being built in layers. The local core should r
 
 ---
 
-## 0.2 — Local depth and polish (in progress)
+## 0.2 — Local depth and polish (released)
 
 ### Recently completed
 
@@ -53,7 +53,9 @@ SH File Explorer is intentionally being built in layers. The local core should r
 
 ### Browsing and organization
 
-- [ ] Tabs and optional dual-pane mode for tablets/foldables
+- [x] Optional built-in dual-pane mode with independent pane navigation, selection, and search
+- [x] Cross-pane copy/move through the shared clipboard
+- [ ] Tabs for tablets/foldables
 - [ ] File shortcuts on the home screen
 - [ ] Batch rename with preview
 - [ ] Advanced rename patterns (counter, date, extension changes)

@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shfileexplorer.data.FileEntry
 import com.shfileexplorer.ui.ExplorerUiState
+import com.shfileexplorer.ui.PaneId
 import com.shfileexplorer.ui.components.EmptyState
 import com.shfileexplorer.ui.components.FileGridItem
 import com.shfileexplorer.ui.components.FileRow
@@ -49,7 +50,9 @@ fun BrowserContent(
     onAction: (FileEntry, FileRowAction) -> Unit,
     onSortClick: () -> Unit,
     modifier: Modifier = Modifier,
+    pane: PaneId = PaneId.PRIMARY,
 ) {
+    val snapshot = state.pane(pane)
     Column(modifier = modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -58,7 +61,7 @@ fun BrowserContent(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "${state.entries.size} ${if (state.entries.size == 1) "item" else "items"}",
+                text = "${snapshot.entries.size} ${if (snapshot.entries.size == 1) "item" else "items"}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 11.5.sp,
                 modifier = Modifier.weight(1f),
@@ -77,7 +80,7 @@ fun BrowserContent(
             }
         }
 
-        if (state.loading && state.entries.isNotEmpty()) {
+        if (snapshot.loading && snapshot.entries.isNotEmpty()) {
             LinearProgressIndicator(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -88,8 +91,8 @@ fun BrowserContent(
         }
 
         when {
-            state.loading && state.entries.isEmpty() -> LoadingBox()
-            state.entries.isEmpty() -> EmptyState(
+            snapshot.loading && snapshot.entries.isEmpty() -> LoadingBox()
+            snapshot.entries.isEmpty() -> EmptyState(
                 icon = Icons.Rounded.FolderOpen,
                 title = "This folder is empty",
                 body = "Create a folder or copy files here to get started.",
@@ -102,11 +105,11 @@ fun BrowserContent(
                 horizontalArrangement = Arrangement.spacedBy(9.dp),
                 verticalArrangement = Arrangement.spacedBy(9.dp),
             ) {
-                items(state.entries, key = { it.path }) { entry ->
+                items(snapshot.entries, key = { it.path }) { entry ->
                     FileGridItem(
                         entry = entry,
-                        selected = entry.path in state.selection,
-                        selectionMode = state.selection.isNotEmpty(),
+                        selected = entry.path in snapshot.selection,
+                        selectionMode = snapshot.selection.isNotEmpty(),
                         onClick = { onEntryClick(entry) },
                         onLongClick = { onEntryLongClick(entry) },
                         onAction = { onAction(entry, it) },
@@ -118,11 +121,11 @@ fun BrowserContent(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(top = 2.dp, bottom = 110.dp),
             ) {
-                items(state.entries, key = { it.path }) { entry ->
+                items(snapshot.entries, key = { it.path }) { entry ->
                     FileRow(
                         entry = entry,
-                        selected = entry.path in state.selection,
-                        selectionMode = state.selection.isNotEmpty(),
+                        selected = entry.path in snapshot.selection,
+                        selectionMode = snapshot.selection.isNotEmpty(),
                         onClick = { onEntryClick(entry) },
                         onLongClick = { onEntryLongClick(entry) },
                         onAction = { onAction(entry, it) },
@@ -140,13 +143,15 @@ fun SearchContent(
     onEntryLongClick: (FileEntry) -> Unit,
     onAction: (FileEntry, FileRowAction) -> Unit,
     modifier: Modifier = Modifier,
+    pane: PaneId = PaneId.PRIMARY,
 ) {
+    val snapshot = state.pane(pane)
     Column(modifier = modifier.fillMaxSize()) {
         Text(
             text = when {
-                state.searching -> "Searching “${state.query.trim()}”…"
-                state.searchResults.isEmpty() -> "No matches for “${state.query.trim()}”"
-                else -> "${state.searchResults.size} ${if (state.searchResults.size == 1) "result" else "results"} for “${state.query.trim()}”"
+                snapshot.searching -> "Searching “${snapshot.query.trim()}”…"
+                snapshot.searchResults.isEmpty() -> "No matches for “${snapshot.query.trim()}”"
+                else -> "${snapshot.searchResults.size} ${if (snapshot.searchResults.size == 1) "result" else "results"} for “${snapshot.query.trim()}”"
             },
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 11.5.sp,
@@ -154,8 +159,8 @@ fun SearchContent(
         )
 
         when {
-            state.searching && state.searchResults.isEmpty() -> LoadingBox()
-            state.searchResults.isEmpty() -> EmptyState(
+            snapshot.searching && snapshot.searchResults.isEmpty() -> LoadingBox()
+            snapshot.searchResults.isEmpty() -> EmptyState(
                 icon = Icons.Rounded.Search,
                 title = "Nothing found",
                 body = if (state.searchSubfolders) {
@@ -169,11 +174,11 @@ fun SearchContent(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(top = 2.dp, bottom = 110.dp),
             ) {
-                items(state.searchResults, key = { it.path }) { entry ->
+                items(snapshot.searchResults, key = { it.path }) { entry ->
                     FileRow(
                         entry = entry,
-                        selected = entry.path in state.selection,
-                        selectionMode = state.selection.isNotEmpty(),
+                        selected = entry.path in snapshot.selection,
+                        selectionMode = snapshot.selection.isNotEmpty(),
                         onClick = { onEntryClick(entry) },
                         onLongClick = { onEntryLongClick(entry) },
                         onAction = { onAction(entry, it) },

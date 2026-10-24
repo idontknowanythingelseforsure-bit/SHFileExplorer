@@ -4,12 +4,15 @@ import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -47,6 +50,7 @@ import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Unarchive
+import androidx.compose.material.icons.rounded.VerticalSplit
 import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -69,6 +73,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -98,6 +103,7 @@ import com.shfileexplorer.data.SortSpec
 import com.shfileexplorer.data.StorageLocations
 import com.shfileexplorer.ui.ExplorerUiState
 import com.shfileexplorer.ui.ExplorerViewModel
+import com.shfileexplorer.ui.PaneId
 import com.shfileexplorer.ui.components.AboutDialog
 import com.shfileexplorer.ui.components.DeleteDialog
 import com.shfileexplorer.ui.components.DetailsDialog
@@ -120,7 +126,7 @@ fun ExplorerScreen(
     onOpenAppSettings: () -> Unit,
 ) {
     val context = LocalContext.current
-    val currentPath = state.currentPath.orEmpty()
+    val currentPath = state.activePath.orEmpty()
     val rootLocation = remember(currentPath, context) {
         StorageLocations.rootFor(context, currentPath)
             ?: BrowserLocation("Storage", StorageLocations.primaryRoot().absolutePath)
@@ -178,10 +184,10 @@ fun ExplorerScreen(
     }
 
     BackHandler(
-        enabled = state.selection.isNotEmpty() || searchOpen || !state.atHome,
+        enabled = state.activeSelection.isNotEmpty() || searchOpen || !state.atHome,
     ) {
         when {
-            state.selection.isNotEmpty() -> viewModel.clearSelection()
+            state.activeSelection.isNotEmpty() -> viewModel.clearSelection()
             searchOpen -> closeSearch()
             else -> viewModel.goUp()
         }
@@ -191,9 +197,9 @@ fun ExplorerScreen(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            if (state.selection.isNotEmpty()) {
+            if (state.activeSelection.isNotEmpty()) {
                 SelectionTopBar(
-                    count = state.selection.size,
+                    count = state.activeSelection.size,
                     onClose = viewModel::clearSelection,
                     onSelectAll = viewModel::selectAll,
                     onShare = { viewModel.share(selectedPaths) },
@@ -226,7 +232,7 @@ fun ExplorerScreen(
                                     text = if (state.atHome) {
                                         "Local storage"
                                     } else {
-                                        "${state.entries.size} ${if (state.entries.size == 1) "item" else "items"}"
+                                        "${state.activeEntries.size} ${if (state.activeEntries.size == 1) "item" else "items"}"
                                     },
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp,
@@ -256,10 +262,10 @@ fun ExplorerScreen(
                                         contentDescription = if (searchOpen) "Close search" else "Search",
                                     )
                                 }
-                                val favorite = state.currentPath in state.favorites
+                                val favorite = state.activePath in state.favorites
                                 IconButton(
                                     onClick = {
-                                        state.currentPath?.let(viewModel::toggleFavorite)
+                                        state.activePath?.let(viewModel::toggleFavorite)
                                     },
                                 ) {
                                     Icon(
@@ -284,7 +290,11 @@ fun ExplorerScreen(
                                     },
                                     onNewWindow = {
                                         showTopMenu = false
-                                        state.currentPath?.let(::openInNewWindow)
+                                        state.activePath?.let(::openInNewWindow)
+                                    },
+                                    onToggleDualPane = {
+                                        showTopMenu = false
+                                        viewModel.toggleDualPane()
                                     },
                                     onSort = {
                                         showTopMenu = false
@@ -334,7 +344,7 @@ fun ExplorerScreen(
 
                     if (searchOpen && !state.atHome) {
                         SearchField(
-                            query = state.query,
+                            query = state.activeQuery,
                             onQueryChange = viewModel::setQuery,
                             onClose = ::closeSearch,
                             subfolders = state.searchSubfolders,
@@ -342,9 +352,9 @@ fun ExplorerScreen(
                         )
                     }
 
-                    if (!state.atHome && !searchOpen) {
+                    if (!state.atHome && !searchOpen && !state.dualPane) {
                         BreadcrumbBar(
-                            currentPath = state.currentPath.orEmpty(),
+                            currentPath = state.activePath.orEmpty(),
                             rootPath = rootLocation.path,
                             rootLabel = rootLocation.label,
                             onOpenPath = ::openPath,
@@ -364,7 +374,7 @@ fun ExplorerScreen(
             }
         },
         floatingActionButton = {
-            if (!state.atHome && state.selection.isEmpty() && !searchOpen && state.clipboard == null) {
+            if (!state.atHome && state.activeSelection.isEmpty() && !searchOpen && state.clipboard == null) {
                 ExtendedFloatingActionButton(
                     onClick = { showNewFolder = true },
                     icon = { Icon(Icons.Rounded.Add, contentDescription = null) },
@@ -389,10 +399,35 @@ fun ExplorerScreen(
                     onRefresh = viewModel::refreshHome,
                 )
 
+                state.dualPane -> DualPaneContent(
+                    state = state,
+                    onActivatePane = viewModel::setActivePane,
+                    onUp = viewModel::goUpInPane,
+                    onOpenPath = { pane, path -> viewModel.openDirectoryInPane(pane, path) },
+                    onEntryClick = { pane, entry ->
+                        viewModel.setActivePane(pane)
+                        if (state.pane(pane).selection.isNotEmpty()) {
+                            viewModel.toggleSelection(entry.path)
+                        } else {
+                            viewModel.openEntry(entry)
+                        }
+                    },
+                    onEntryLongClick = { pane, entry ->
+                        viewModel.setActivePane(pane)
+                        viewModel.toggleSelection(entry.path)
+                    },
+                    onAction = { pane, entry, action ->
+                        viewModel.setActivePane(pane)
+                        handleAction(entry, action)
+                    },
+                    onSortClick = { showSort = true },
+                )
+
                 state.isSearching -> SearchContent(
                     state = state,
+                    pane = PaneId.PRIMARY,
                     onEntryClick = { entry ->
-                        if (state.selection.isNotEmpty()) {
+                        if (state.activeSelection.isNotEmpty()) {
                             viewModel.toggleSelection(entry.path)
                         } else {
                             viewModel.openEntry(entry)
@@ -404,8 +439,9 @@ fun ExplorerScreen(
 
                 else -> BrowserContent(
                     state = state,
+                    pane = PaneId.PRIMARY,
                     onEntryClick = { entry ->
-                        if (state.selection.isNotEmpty()) {
+                        if (state.activeSelection.isNotEmpty()) {
                             viewModel.toggleSelection(entry.path)
                         } else {
                             viewModel.openEntry(entry)
@@ -734,6 +770,7 @@ private fun TopOverflowMenu(
     darkTheme: Boolean,
     onNewFile: () -> Unit,
     onNewWindow: () -> Unit,
+    onToggleDualPane: () -> Unit,
     onSort: () -> Unit,
     onToggleView: () -> Unit,
     onToggleHidden: () -> Unit,
@@ -748,6 +785,12 @@ private fun TopOverflowMenu(
         if (!state.atHome) {
             MenuAction("New file", Icons.Rounded.Add, onDismiss, onNewFile)
             MenuAction("Open in new window", Icons.AutoMirrored.Rounded.OpenInNew, onDismiss, onNewWindow)
+            MenuAction(
+                if (state.dualPane) "Use single pane" else "Use dual pane",
+                Icons.Rounded.VerticalSplit,
+                onDismiss,
+                onToggleDualPane,
+            )
             MenuAction("Sort by", Icons.Rounded.Sort, onDismiss, onSort)
             MenuAction(
                 if (state.grid) "Use list view" else "Use grid view",
@@ -861,6 +904,212 @@ private fun ClipboardBar(
             TextButton(onClick = onPaste) { Text("Paste here") }
             IconButton(onClick = onClear) {
                 Icon(Icons.Rounded.Close, contentDescription = "Clear clipboard", modifier = Modifier.size(19.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DualPaneContent(
+    state: ExplorerUiState,
+    onActivatePane: (PaneId) -> Unit,
+    onUp: (PaneId) -> Unit,
+    onOpenPath: (PaneId, String) -> Unit,
+    onEntryClick: (PaneId, FileEntry) -> Unit,
+    onEntryLongClick: (PaneId, FileEntry) -> Unit,
+    onAction: (PaneId, FileEntry, FileRowAction) -> Unit,
+    onSortClick: () -> Unit,
+) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val sideBySide = maxWidth >= 600.dp
+        if (sideBySide) {
+            Row(Modifier.fillMaxSize()) {
+                ExplorerPane(
+                    pane = PaneId.PRIMARY,
+                    state = state,
+                    active = state.activePane == PaneId.PRIMARY,
+                    onActivate = { onActivatePane(PaneId.PRIMARY) },
+                    onUp = { onUp(PaneId.PRIMARY) },
+                    onOpenPath = { onOpenPath(PaneId.PRIMARY, it) },
+                    onEntryClick = { onEntryClick(PaneId.PRIMARY, it) },
+                    onEntryLongClick = { onEntryLongClick(PaneId.PRIMARY, it) },
+                    onAction = { entry, action -> onAction(PaneId.PRIMARY, entry, action) },
+                    onSortClick = onSortClick,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                )
+                VerticalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                )
+                ExplorerPane(
+                    pane = PaneId.SECONDARY,
+                    state = state,
+                    active = state.activePane == PaneId.SECONDARY,
+                    onActivate = { onActivatePane(PaneId.SECONDARY) },
+                    onUp = { onUp(PaneId.SECONDARY) },
+                    onOpenPath = { onOpenPath(PaneId.SECONDARY, it) },
+                    onEntryClick = { onEntryClick(PaneId.SECONDARY, it) },
+                    onEntryLongClick = { onEntryLongClick(PaneId.SECONDARY, it) },
+                    onAction = { entry, action -> onAction(PaneId.SECONDARY, entry, action) },
+                    onSortClick = onSortClick,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                )
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                ExplorerPane(
+                    pane = PaneId.PRIMARY,
+                    state = state,
+                    active = state.activePane == PaneId.PRIMARY,
+                    onActivate = { onActivatePane(PaneId.PRIMARY) },
+                    onUp = { onUp(PaneId.PRIMARY) },
+                    onOpenPath = { onOpenPath(PaneId.PRIMARY, it) },
+                    onEntryClick = { onEntryClick(PaneId.PRIMARY, it) },
+                    onEntryLongClick = { onEntryLongClick(PaneId.PRIMARY, it) },
+                    onAction = { entry, action -> onAction(PaneId.PRIMARY, entry, action) },
+                    onSortClick = onSortClick,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                )
+                ExplorerPane(
+                    pane = PaneId.SECONDARY,
+                    state = state,
+                    active = state.activePane == PaneId.SECONDARY,
+                    onActivate = { onActivatePane(PaneId.SECONDARY) },
+                    onUp = { onUp(PaneId.SECONDARY) },
+                    onOpenPath = { onOpenPath(PaneId.SECONDARY, it) },
+                    onEntryClick = { onEntryClick(PaneId.SECONDARY, it) },
+                    onEntryLongClick = { onEntryLongClick(PaneId.SECONDARY, it) },
+                    onAction = { entry, action -> onAction(PaneId.SECONDARY, entry, action) },
+                    onSortClick = onSortClick,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExplorerPane(
+    pane: PaneId,
+    state: ExplorerUiState,
+    active: Boolean,
+    onActivate: () -> Unit,
+    onUp: () -> Unit,
+    onOpenPath: (String) -> Unit,
+    onEntryClick: (FileEntry) -> Unit,
+    onEntryLongClick: (FileEntry) -> Unit,
+    onAction: (FileEntry, FileRowAction) -> Unit,
+    onSortClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val snapshot = state.pane(pane)
+    val path = snapshot.path.orEmpty()
+    val context = LocalContext.current
+    val rootLocation = remember(path, context) {
+        StorageLocations.rootFor(context, path)
+            ?: BrowserLocation("Storage", StorageLocations.primaryRoot().absolutePath)
+    }
+    val paneBackground = if (active) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.035f)
+    } else {
+        MaterialTheme.colorScheme.background
+    }
+
+    Column(modifier = modifier.background(paneBackground)) {
+        if (active) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { onActivate(); onUp() }) {
+                Icon(Icons.Rounded.ArrowBack, contentDescription = "Up")
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable(onClick = onActivate)
+                    .padding(vertical = 4.dp),
+            ) {
+                Text(
+                    text = if (path.isBlank()) {
+                        "Loading…"
+                    } else {
+                        File(path).name.ifBlank { rootLocation.label }
+                    },
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = if (active) "Active pane" else "Tap to activate",
+                    color = if (active) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    fontSize = 10.sp,
+                )
+            }
+        }
+
+        if (path.isBlank()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(26.dp),
+                    strokeWidth = 2.5.dp,
+                )
+            }
+        } else {
+            BreadcrumbBar(
+                currentPath = path,
+                rootPath = rootLocation.path,
+                rootLabel = rootLocation.label,
+                onOpenPath = { onActivate(); onOpenPath(it) },
+            )
+            if (snapshot.query.isNotBlank() || snapshot.searching) {
+                SearchContent(
+                    state = state,
+                    pane = pane,
+                    onEntryClick = { onActivate(); onEntryClick(it) },
+                    onEntryLongClick = { onActivate(); onEntryLongClick(it) },
+                    onAction = { entry, action -> onActivate(); onAction(entry, action) },
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                BrowserContent(
+                    state = state,
+                    pane = pane,
+                    onEntryClick = { onActivate(); onEntryClick(it) },
+                    onEntryLongClick = { onActivate(); onEntryLongClick(it) },
+                    onAction = { entry, action -> onActivate(); onAction(entry, action) },
+                    onSortClick = { onActivate(); onSortClick() },
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
