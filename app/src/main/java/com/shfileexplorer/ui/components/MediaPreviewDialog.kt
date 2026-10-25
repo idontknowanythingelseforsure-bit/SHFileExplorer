@@ -127,10 +127,17 @@ fun MediaPreviewDialog(
 
 @Composable
 private fun ImagePreview(entry: FileEntry) {
+    val context = LocalContext.current
     var finished by remember(entry.path, entry.lastModified) { mutableStateOf(false) }
     var image by remember(entry.path, entry.lastModified) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(entry.path, entry.lastModified) {
-        image = ThumbnailLoader.load(entry.file, PREVIEW_MAX_PX)
+        val uri = entry.uri
+        val file = entry.file
+        image = when {
+            uri != null -> ThumbnailLoader.loadUri(context, uri, PREVIEW_MAX_PX)
+            file != null -> ThumbnailLoader.load(file, PREVIEW_MAX_PX)
+            else -> null
+        }
         finished = true
     }
     val bitmap = image
@@ -163,7 +170,8 @@ private fun VideoPreview(entry: FileEntry) {
     val context = LocalContext.current
     val videoView = remember(entry.path) {
         VideoView(context).apply {
-            setVideoPath(entry.path)
+            val uri = entry.uri
+            if (uri != null) setVideoURI(uri) else setVideoPath(entry.path)
             val controller = MediaController(context)
             controller.setMediaPlayer(this)
             setMediaController(controller)

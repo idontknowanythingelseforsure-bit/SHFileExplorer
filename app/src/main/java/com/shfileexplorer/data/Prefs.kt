@@ -2,6 +2,7 @@ package com.shfileexplorer.data
 
 import android.content.Context
 import org.json.JSONArray
+import org.json.JSONObject
 
 class Prefs(context: Context) {
 
@@ -40,6 +41,21 @@ class Prefs(context: Context) {
     var darkTheme: Boolean
         get() = prefs.getBoolean(KEY_DARK, true)
         set(value) = prefs.edit().putBoolean(KEY_DARK, value).apply()
+
+    fun safLocations(): List<SafLocation> =
+        decodeSafLocations(prefs.getString(KEY_SAF_LOCATIONS, null))
+
+    fun addSafLocation(location: SafLocation) {
+        val updated = (listOf(location) + safLocations().filterNot { it.uri == location.uri })
+            .distinctBy { it.uri }
+            .take(MAX_SAF_LOCATIONS)
+        prefs.edit().putString(KEY_SAF_LOCATIONS, encodeSafLocations(updated)).apply()
+    }
+
+    fun removeSafLocation(uri: String) {
+        val updated = safLocations().filterNot { it.uri == uri }
+        prefs.edit().putString(KEY_SAF_LOCATIONS, encodeSafLocations(updated)).apply()
+    }
 
     fun favorites(): List<String> =
         prefs.getStringSet(KEY_FAVORITES, emptySet()).orEmpty().sorted()
@@ -86,6 +102,30 @@ class Prefs(context: Context) {
             .apply()
     }
 
+    private fun encodeSafLocations(values: List<SafLocation>): String =
+        JSONArray().apply {
+            values.forEach { location ->
+                put(
+                    JSONObject()
+                        .put("uri", location.uri)
+                        .put("label", location.label),
+                )
+            }
+        }.toString()
+
+    private fun decodeSafLocations(raw: String?): List<SafLocation> {
+        if (raw.isNullOrEmpty()) return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { index ->
+                val item = array.optJSONObject(index) ?: return@mapNotNull null
+                val uri = item.optString("uri").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val label = item.optString("label").takeIf { it.isNotBlank() } ?: "Cloud folder"
+                SafLocation(uri, label)
+            }
+        }.getOrDefault(emptyList())
+    }
+
     private fun encodeList(values: List<String>): String =
         JSONArray().apply { values.forEach(::put) }.toString()
 
@@ -111,6 +151,8 @@ class Prefs(context: Context) {
         const val KEY_FAVORITES = "favorites"
         const val KEY_RECENT_DIRS = "recent_dirs"
         const val KEY_RECENT_FILES = "recent_files"
+        const val KEY_SAF_LOCATIONS = "saf_locations"
         const val MAX_RECENT = 12
+        const val MAX_SAF_LOCATIONS = 20
     }
 }

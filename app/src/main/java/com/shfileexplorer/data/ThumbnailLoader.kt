@@ -1,8 +1,10 @@
 package com.shfileexplorer.data
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.util.LruCache
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +46,47 @@ object ThumbnailLoader {
         if (bitmap != null) cache.put(key, bitmap)
         bitmap
     }
+
+    /**
+     * Decode a preview from a Storage Access Framework URI. Cloud documents are
+     * not used for list thumbnails, but a full-screen image preview still needs
+     * a sampled decode from the provider's content stream.
+     */
+    suspend fun loadUri(context: Context, uri: Uri, targetPx: Int): Bitmap? =
+        withContext(Dispatchers.IO) {
+            val key = "uri:$uri:$targetPx"
+            cache.get(key)?.let { return@withContext it }
+
+            val bitmap = decodeGate.withPermit {
+                try {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        BitmapFactory.decodeStream(stream, null, bounds)
+                    }
+                    val width = bounds.outWidth
+                    val height = bounds.outHeight
+                    if (width <= 0 || height <= 0) return@withPermit null
+
+                    var sample = 1
+                    while (width / (sample * 2) >= targetPx && height / (sample * 2) >= targetPx) {
+                        sample *= 2
+                    }
+                    val options = BitmapFactory.Options().apply {
+                        inSampleSize = sample
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        BitmapFactory.decodeStream(stream, null, options)
+                    }?.let { scaleDown(it, targetPx) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+            if (bitmap != null) cache.put(key, bitmap)
+            bitmap
+        }
 
     private fun loadImage(file: File, targetPx: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

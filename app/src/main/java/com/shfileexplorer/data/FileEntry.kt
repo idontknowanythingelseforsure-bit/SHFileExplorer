@@ -1,5 +1,6 @@
 package com.shfileexplorer.data
 
+import android.net.Uri
 import android.webkit.MimeTypeMap
 import java.io.File
 
@@ -12,7 +13,9 @@ data class FileEntry(
     val mimeType: String,
     val isHidden: Boolean,
 ) {
-    val file: File get() = File(path)
+    val isSaf: Boolean get() = path.startsWith("content://", ignoreCase = true)
+    val uri: Uri? get() = if (isSaf) Uri.parse(path) else null
+    val file: File? get() = if (isSaf) null else File(path)
     val extension: String get() = name.substringAfterLast('.', "").lowercase()
     val isZip: Boolean get() = !isDirectory && (extension == "zip" || mimeType == "application/zip")
     val isImage: Boolean get() = !isDirectory && extension in IMAGE_EXTENSIONS

@@ -18,6 +18,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccessTime
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Refresh
@@ -41,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shfileexplorer.data.BrowserLocation
 import com.shfileexplorer.data.FileEntry
+import com.shfileexplorer.data.SafLocation
 import com.shfileexplorer.data.StorageStats
 import com.shfileexplorer.data.formatBytes
 import com.shfileexplorer.data.formatDate
@@ -56,6 +60,9 @@ fun HomeScreen(
     onOpenFile: (FileEntry) -> Unit,
     onRemoveFavorite: (String) -> Unit,
     onRefresh: () -> Unit,
+    onOpenSaf: (SafLocation) -> Unit,
+    onAddSaf: () -> Unit,
+    onRemoveSaf: (SafLocation) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -88,6 +95,37 @@ fun HomeScreen(
                     )
                 }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+
+        item {
+            SectionHeader(
+                title = "Cloud & SAF",
+                modifier = Modifier.padding(top = 18.dp, bottom = 2.dp),
+            )
+        }
+        if (state.safLocations.isEmpty()) {
+            item {
+                AddCloudRow(
+                    label = "Add a cloud folder",
+                    detail = "Google Drive, OneDrive, or another document provider",
+                    onClick = onAddSaf,
+                )
+            }
+        } else {
+            items(state.safLocations, key = { "saf-${it.uri}" }) { location ->
+                SafShortcutRow(
+                    location = location,
+                    onClick = { onOpenSaf(location) },
+                    onRemove = { onRemoveSaf(location) },
+                )
+            }
+            item {
+                AddCloudRow(
+                    label = "Add another cloud folder",
+                    detail = "Uses Android's Storage Access Framework",
+                    onClick = onAddSaf,
+                )
             }
         }
 
@@ -150,7 +188,7 @@ fun HomeScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    text = "Local-first  •  No account  •  No network permission",
+                    text = "No account  •  No INTERNET permission  •  SAF cloud access",
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
                     fontSize = 11.sp,
                 )
@@ -358,6 +396,112 @@ private fun FolderShortcutRow(
                     modifier = Modifier.size(19.dp),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun SafShortcutRow(
+    location: SafLocation,
+    onClick: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(15.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(ShPalette.Amber.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Cloud,
+                contentDescription = null,
+                tint = ShPalette.Amber,
+                modifier = Modifier.size(21.dp),
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = location.label,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "Cloud folder  •  Storage Access Framework",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.5.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onRemove) {
+            Icon(
+                imageVector = Icons.Rounded.Close,
+                contentDescription = "Remove cloud location",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AddCloudRow(
+    label: String,
+    detail: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(15.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Add,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(21.dp),
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = label,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = detail,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.5.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

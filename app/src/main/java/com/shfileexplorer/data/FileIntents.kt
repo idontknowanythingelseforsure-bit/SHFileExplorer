@@ -6,12 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
-import java.io.File
 
 object FileIntents {
 
     fun open(context: Context, entry: FileEntry): Result<Unit> = runCatching {
-        val uri = uriFor(context, entry.file)
+        val uri = uriFor(context, entry)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, entry.mimeType)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -22,7 +21,7 @@ object FileIntents {
 
     fun share(context: Context, entries: List<FileEntry>): Result<Unit> = runCatching {
         require(entries.isNotEmpty()) { "Select at least one item to share." }
-        val uris = entries.map { uriFor(context, it.file) }
+        val uris = entries.map { uriFor(context, it) }
         val intent = if (uris.size == 1) {
             Intent(Intent.ACTION_SEND).apply {
                 type = entries.first().mimeType
@@ -45,8 +44,12 @@ object FileIntents {
         launchChooser(context, intent, "Share with")
     }
 
-    private fun uriFor(context: Context, file: File): Uri =
-        FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+    private fun uriFor(context: Context, entry: FileEntry): Uri =
+        entry.uri ?: FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.files",
+            entry.file ?: error("This item has no local file."),
+        )
 
     private fun launchChooser(context: Context, intent: Intent, title: String) {
         val chooser = Intent.createChooser(intent, title)

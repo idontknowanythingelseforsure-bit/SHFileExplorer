@@ -404,16 +404,16 @@ fun AboutDialog(onDismiss: () -> Unit) {
                     }
                     Spacer(Modifier.width(12.dp))
                     Column {
-                        Text("Version 0.3.0", fontWeight = FontWeight.SemiBold)
+                        Text("Version 0.4.0", fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Local-first file manager",
+                            "Local-first file manager with SAF cloud folders",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 12.sp,
                         )
                     }
                 }
                 Text(
-                    text = "An original, clean-room Android file manager. No account, no analytics, and no internet permission. Core local file operations work fully offline.",
+                    text = "An original, clean-room Android file manager. No account, no analytics, and no internet permission. Local operations work fully offline; cloud folders are reached through Android's Storage Access Framework and the provider app you already use.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 20.sp,
                 )

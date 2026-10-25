@@ -75,7 +75,7 @@ SH File Explorer is intentionally being built in layers. The local core should r
 
 ### Platform
 
-- [ ] SAF tree-picker fallback for users who do not want All files access
+- [x] SAF tree-picker access for users who do not want All files access, including cloud/document providers
 - [ ] Release signing and Play Store policy review if distribution is ever considered
 - [ ] Localization and RTL audit
 - [ ] Accessibility audit (TalkBack labels, large text, contrast)
@@ -83,7 +83,58 @@ SH File Explorer is intentionally being built in layers. The local core should r
 
 ---
 
-## 0.3 — Network storage (optional module)
+## 0.3 — Built-in dual pane (released)
+
+- [x] Adaptive side-by-side/stacked dual-pane layout
+- [x] Independent path, navigation, selection, search, and scroll state per pane
+- [x] Shared clipboard for cross-pane copy/move
+- [x] Active-pane highlighting and pane-aware toolbar actions
+- [x] Dual-pane state included in the UI-state unit tests
+
+---
+
+## 0.4 — Cloud folders via SAF (released)
+
+- [x] Add, open, and remove document-tree locations through `ACTION_OPEN_DOCUMENT_TREE`
+- [x] Persist read/write URI permissions when the provider supports them
+- [x] Browse, sort, search, and multi-select SAF folders in single or dual-pane mode
+- [x] Per-pane SAF breadcrumbs and parent navigation
+- [x] Create folders/files, rename, and delete in SAF trees
+- [x] Copy/move between local and SAF locations and between different SAF providers using streaming transfers
+- [x] Open and share SAF documents through their `content://` URIs
+- [x] Image preview from provider streams and video preview through content URIs
+- [x] Skip cloud list thumbnails to keep provider-backed scrolling responsive
+- [x] No `INTERNET` permission added; the app uses the provider's existing access
+- [ ] Runtime verification with Google Drive, OneDrive, a local document provider, a read-only provider, and a provider that revokes access
+- [ ] Conflict-policy UI for cloud transfers (replace/skip/keep both)
+- [ ] ZIP operations directly in SAF locations
+- [ ] SAF document creation with provider-specific MIME requirements and metadata
+- [ ] Operation cancellation for large cloud transfers
+
+**Known limits:** provider capabilities vary; archive operations remain local-only; cloud search is bounded by provider listing speed.
+
+---
+
+## 0.5 — FTP server (planned, opt-in)
+
+The FTP server is a separate, explicit power-user feature. It needs network permission even though the local file manager does not.
+
+- [ ] Foreground service with a persistent notification and visible on/off state
+- [ ] Loopback-only default, with an explicit LAN-binding switch
+- [ ] Random one-time password or user-configured credentials
+- [ ] Read-only mode by default; write mode requires an explicit toggle
+- [ ] Optional anonymous access disabled and never enabled silently
+- [ ] Port selection and conflict handling
+- [ ] Connection log with no file contents and no credential leakage
+- [ ] Timeouts, idle disconnect, and transfer limits
+- [ ] Clear warning that FTP is unencrypted and intended for trusted local networks
+- [ ] `INTERNET` permission only in the server-capable build or flavor
+- [ ] App shutdown, task removal, and network-change handling
+- [ ] Manual test with a desktop FTP client on a trusted LAN
+
+---
+
+## 0.6 — Network storage clients (optional module)
 
 Network support requires `INTERNET` permission. To protect the offline core, network features should ship behind a separate product flavor or optional module:
 
@@ -115,7 +166,7 @@ Security requirements:
 
 ---
 
-## 0.4 — Cloud providers (optional, separate module)
+## 0.7 — Provider-specific cloud SDKs (optional, separate module)
 
 Cloud features are inherently online and cannot satisfy the offline-core requirement. If added, they should be independent plugins:
 
@@ -135,16 +186,32 @@ Requirements:
 
 ---
 
+## 0.8 — Optional root/Shizuku module (planned, opt-in)
+
+Root and Shizuku are not part of the default experience. If implemented, they must remain a separate, clearly labeled power-user module with no silent privilege escalation.
+
+- [ ] Detect whether root or Shizuku is available without prompting on launch
+- [ ] Explicit opt-in screen explaining the risks and the scoped benefit
+- [ ] Read-only privileged browsing first; no privileged writes by default
+- [ ] Shizuku binder permission flow with clear failure states
+- [ ] Root command execution with fixed arguments and no shell-string interpolation
+- [ ] No credential, token, or file-content logging
+- [ ] Immediate disable/revoke path that returns to normal SAF/local access
+- [ ] Threat model and security review before shipping
+- [ ] Keep the default APK free of privileged code paths where practical
+
+---
+
 ## Explicit non-goals
 
 - Reproducing or redistributing code, resources, branding, or icon artwork from other file managers.
 - Any license-circumvention mechanism.
-- Silent or unrestricted root access in the core app.
-- Root/Shizuku privilege escalation as a default feature.
+- Silent or unrestricted root access in the default app.
+- Root/Shizuku privilege escalation without explicit opt-in.
 - Analytics, ad SDKs, or telemetry.
 - Hidden network activity in the offline build.
 
-Root/Shizuku is not planned for the core. If it is ever explored, it must be a separate, clearly labeled power-user module with a threat model and opt-in consent.
+Root/Shizuku stays outside the default experience. If it is shipped, it must be a separate, clearly labeled power-user module with a threat model and opt-in consent.
 
 ---
 
@@ -154,12 +221,14 @@ Root/Shizuku is not planned for the core. If it is ever explored, it must be a s
 2. `:app:assembleDebug` passes.
 3. `:app:lintDebug` passes.
 4. Manual device pass on API 26, 29, 31, and the current target API.
-5. Permission grant, deny, and revoke paths verified.
-6. File-operation failure injection verified (no silent data loss).
-7. ZIP extraction fuzzed with malformed and hostile archives.
-8. No new sensitive permission without a written justification.
-9. Release APK signed with a protected keystore, not a debug key.
-10. Privacy and permission text reviewed against the shipped manifest.
+5. Permission grant, deny, and revoke paths verified, including SAF persisted-grant revocation.
+6. SAF browsing and transfers verified with a read-only provider, a cloud provider, and a provider that loses access mid-session.
+7. File-operation failure injection verified (no silent data loss).
+8. ZIP extraction fuzzed with malformed and hostile archives.
+9. No new sensitive permission without a written justification.
+10. Network/server features are isolated from the offline build and clearly labeled.
+11. Release APK signed with a protected keystore, not a debug key.
+12. Privacy and permission text reviewed against the shipped manifest.
 
 ---
 

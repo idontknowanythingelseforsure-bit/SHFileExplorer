@@ -291,9 +291,11 @@ private fun FileActionMenu(
         MenuItem("Rename", Icons.Rounded.Edit) { onAction(FileRowAction.RENAME) }
         MenuItem("Copy", Icons.Rounded.ContentCopy) { onAction(FileRowAction.COPY) }
         MenuItem("Move", Icons.AutoMirrored.Rounded.DriveFileMove) { onAction(FileRowAction.MOVE) }
-        MenuItem("Compress to ZIP", Icons.Rounded.Archive) { onAction(FileRowAction.COMPRESS) }
-        if (entry.isZip) {
-            MenuItem("Extract here", Icons.Rounded.Unarchive) { onAction(FileRowAction.EXTRACT) }
+        if (!entry.isSaf) {
+            MenuItem("Compress to ZIP", Icons.Rounded.Archive) { onAction(FileRowAction.COMPRESS) }
+            if (entry.isZip) {
+                MenuItem("Extract here", Icons.Rounded.Unarchive) { onAction(FileRowAction.EXTRACT) }
+            }
         }
         MenuItem("Details", Icons.Rounded.Info) { onAction(FileRowAction.DETAILS) }
         MenuItem("Delete", Icons.Rounded.Delete, danger = true) { onAction(FileRowAction.DELETE) }
@@ -335,8 +337,9 @@ fun FileIcon(entry: FileEntry, size: androidx.compose.ui.unit.Dp = 42.dp) {
         mutableStateOf<ImageBitmap?>(null)
     }
     LaunchedEffect(entry.path, entry.lastModified, targetPx) {
-        thumbnail = if (entry.isPreviewable) {
-            ThumbnailLoader.load(entry.file, targetPx)?.asImageBitmap()
+        val file = entry.file
+        thumbnail = if (entry.isPreviewable && !entry.isSaf && file != null) {
+            ThumbnailLoader.load(file, targetPx)?.asImageBitmap()
         } else {
             null
         }

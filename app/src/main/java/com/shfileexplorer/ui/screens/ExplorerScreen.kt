@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.rounded.DarkMode
@@ -124,16 +125,28 @@ fun ExplorerScreen(
     darkTheme: Boolean,
     onToggleTheme: () -> Unit,
     onOpenAppSettings: () -> Unit,
+    onPickSafFolder: () -> Unit,
 ) {
     val context = LocalContext.current
     val currentPath = state.activePath.orEmpty()
-    val rootLocation = remember(currentPath, context) {
-        StorageLocations.rootFor(context, currentPath)
-            ?: BrowserLocation("Storage", StorageLocations.primaryRoot().absolutePath)
+    val activeBreadcrumbs = state.activeBreadcrumbs
+    val safActive = state.activeIsSaf
+    val rootLocation = remember(currentPath, context, activeBreadcrumbs, safActive) {
+        when {
+            activeBreadcrumbs.isNotEmpty() -> {
+                BrowserLocation(activeBreadcrumbs.first().second, activeBreadcrumbs.first().first)
+            }
+
+            safActive -> BrowserLocation("Cloud folder", currentPath)
+            else -> StorageLocations.rootFor(context, currentPath)
+                ?: BrowserLocation("Storage", StorageLocations.primaryRoot().absolutePath)
+        }
     }
     val directoryTitle = when {
         state.atHome -> "SH File Explorer"
+        activeBreadcrumbs.isNotEmpty() -> activeBreadcrumbs.last().second
         currentPath == rootLocation.path -> rootLocation.label
+        safActive -> "Cloud folder"
         else -> File(currentPath).name.ifBlank { rootLocation.label }
     }
     var searchOpen by rememberSaveable { mutableStateOf(false) }
@@ -210,6 +223,7 @@ fun ExplorerScreen(
                     onExtract = { viewModel.extract(selectedPaths) },
                     onDetails = { selected.singleOrNull()?.let { detailsTarget = it } },
                     canExtract = selected.any { it.isZip },
+                    canCompress = selected.none { it.isSaf },
                     canDetails = selected.size == 1,
                 )
             } else {
@@ -262,17 +276,19 @@ fun ExplorerScreen(
                                         contentDescription = if (searchOpen) "Close search" else "Search",
                                     )
                                 }
-                                val favorite = state.activePath in state.favorites
-                                IconButton(
-                                    onClick = {
-                                        state.activePath?.let(viewModel::toggleFavorite)
-                                    },
-                                ) {
-                                    Icon(
-                                        imageVector = if (favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
-                                        contentDescription = if (favorite) "Remove favorite" else "Add favorite",
-                                        tint = if (favorite) ShPalette.Amber else MaterialTheme.colorScheme.onSurface,
-                                    )
+                                if (!safActive) {
+                                    val favorite = state.activePath in state.favorites
+                                    IconButton(
+                                        onClick = {
+                                            state.activePath?.let(viewModel::toggleFavorite)
+                                        },
+                                    ) {
+                                        Icon(
+                                            imageVector = if (favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                                            contentDescription = if (favorite) "Remove favorite" else "Add favorite",
+                                            tint = if (favorite) ShPalette.Amber else MaterialTheme.colorScheme.onSurface,
+                                        )
+                                    }
                                 }
                             }
                             Box {
@@ -291,6 +307,10 @@ fun ExplorerScreen(
                                     onNewWindow = {
                                         showTopMenu = false
                                         state.activePath?.let(::openInNewWindow)
+                                    },
+                                    onAddCloudFolder = {
+                                        showTopMenu = false
+                                        onPickSafFolder()
                                     },
                                     onToggleDualPane = {
                                         showTopMenu = false
@@ -353,12 +373,19 @@ fun ExplorerScreen(
                     }
 
                     if (!state.atHome && !searchOpen && !state.dualPane) {
-                        BreadcrumbBar(
-                            currentPath = state.activePath.orEmpty(),
-                            rootPath = rootLocation.path,
-                            rootLabel = rootLocation.label,
-                            onOpenPath = ::openPath,
-                        )
+                        if (activeBreadcrumbs.isNotEmpty()) {
+                            BreadcrumbBar(
+                                segments = activeBreadcrumbs,
+                                onOpenPath = ::openPath,
+                            )
+                        } else {
+                            BreadcrumbBar(
+                                currentPath = state.activePath.orEmpty(),
+                                rootPath = rootLocation.path,
+                                rootLabel = rootLocation.label,
+                                onOpenPath = ::openPath,
+                            )
+                        }
                     }
                 }
             }
@@ -397,6 +424,9 @@ fun ExplorerScreen(
                     onOpenFile = viewModel::openEntry,
                     onRemoveFavorite = viewModel::toggleFavorite,
                     onRefresh = viewModel::refreshHome,
+                    onOpenSaf = { location -> openPath(location.uri) },
+                    onAddSaf = onPickSafFolder,
+                    onRemoveSaf = viewModel::removeSafLocation,
                 )
 
                 state.dualPane -> DualPaneContent(
@@ -640,6 +670,14 @@ private fun BreadcrumbBar(
     val segments = remember(currentPath, rootPath, rootLabel) {
         buildBreadcrumbs(currentPath, rootPath, rootLabel)
     }
+    BreadcrumbBar(segments = segments, onOpenPath = onOpenPath)
+}
+
+@Composable
+private fun BreadcrumbBar(
+    segments: List<Pair<String, String>>,
+    onOpenPath: (String) -> Unit,
+) {
     LazyRow(
         modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
@@ -687,6 +725,7 @@ private fun SelectionTopBar(
     onExtract: () -> Unit,
     onDetails: () -> Unit,
     canExtract: Boolean,
+    canCompress: Boolean,
     canDetails: Boolean,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -740,9 +779,11 @@ private fun SelectionTopBar(
                         menuOpen = false
                         onMove()
                     }
-                    MenuAction("Compress to ZIP", Icons.Rounded.Archive) {
-                        menuOpen = false
-                        onCompress()
+                    if (canCompress) {
+                        MenuAction("Compress to ZIP", Icons.Rounded.Archive) {
+                            menuOpen = false
+                            onCompress()
+                        }
                     }
                     if (canDetails) {
                         MenuAction("Details", Icons.Rounded.Info) {
@@ -770,6 +811,7 @@ private fun TopOverflowMenu(
     darkTheme: Boolean,
     onNewFile: () -> Unit,
     onNewWindow: () -> Unit,
+    onAddCloudFolder: () -> Unit,
     onToggleDualPane: () -> Unit,
     onSort: () -> Unit,
     onToggleView: () -> Unit,
@@ -805,6 +847,7 @@ private fun TopOverflowMenu(
                 onToggleHidden,
             )
         }
+        MenuAction("Add cloud folder", Icons.Rounded.Cloud, onDismiss, onAddCloudFolder)
         MenuAction("Favorites", Icons.Rounded.Star, onDismiss, onFavorites)
         MenuAction("Refresh", Icons.Rounded.Refresh, onDismiss, onRefresh)
         if (!state.atHome) {
@@ -1014,10 +1057,18 @@ private fun ExplorerPane(
 ) {
     val snapshot = state.pane(pane)
     val path = snapshot.path.orEmpty()
+    val breadcrumbs = snapshot.breadcrumbs
     val context = LocalContext.current
-    val rootLocation = remember(path, context) {
-        StorageLocations.rootFor(context, path)
-            ?: BrowserLocation("Storage", StorageLocations.primaryRoot().absolutePath)
+    val rootLocation = remember(path, context, breadcrumbs) {
+        when {
+            breadcrumbs.isNotEmpty() -> {
+                BrowserLocation(breadcrumbs.first().second, breadcrumbs.first().first)
+            }
+
+            snapshot.isSaf -> BrowserLocation("Cloud folder", path)
+            else -> StorageLocations.rootFor(context, path)
+                ?: BrowserLocation("Storage", StorageLocations.primaryRoot().absolutePath)
+        }
     }
     val paneBackground = if (active) {
         MaterialTheme.colorScheme.primary.copy(alpha = 0.035f)
@@ -1053,7 +1104,8 @@ private fun ExplorerPane(
                     text = if (path.isBlank()) {
                         "Loading…"
                     } else {
-                        File(path).name.ifBlank { rootLocation.label }
+                        breadcrumbs.lastOrNull()?.second
+                            ?: if (snapshot.isSaf) rootLocation.label else File(path).name.ifBlank { rootLocation.label }
                     },
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -1085,12 +1137,19 @@ private fun ExplorerPane(
                 )
             }
         } else {
-            BreadcrumbBar(
-                currentPath = path,
-                rootPath = rootLocation.path,
-                rootLabel = rootLocation.label,
-                onOpenPath = { onActivate(); onOpenPath(it) },
-            )
+            if (breadcrumbs.isNotEmpty()) {
+                BreadcrumbBar(
+                    segments = breadcrumbs,
+                    onOpenPath = { onActivate(); onOpenPath(it) },
+                )
+            } else {
+                BreadcrumbBar(
+                    currentPath = path,
+                    rootPath = rootLocation.path,
+                    rootLabel = rootLocation.label,
+                    onOpenPath = { onActivate(); onOpenPath(it) },
+                )
+            }
             if (snapshot.query.isNotBlank() || snapshot.searching) {
                 SearchContent(
                     state = state,

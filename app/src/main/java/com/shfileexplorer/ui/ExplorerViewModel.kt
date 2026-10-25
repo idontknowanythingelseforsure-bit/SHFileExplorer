@@ -1,6 +1,7 @@
 package com.shfileexplorer.ui
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.shfileexplorer.data.BrowserLocation
@@ -9,6 +10,8 @@ import com.shfileexplorer.data.FileEntry
 import com.shfileexplorer.data.FileRepository
 import com.shfileexplorer.data.OperationState
 import com.shfileexplorer.data.Prefs
+import com.shfileexplorer.data.SafLocation
+import com.shfileexplorer.data.SafRepository
 import com.shfileexplorer.data.SortMode
 import com.shfileexplorer.data.SortSpec
 import com.shfileexplorer.data.StorageLocations
@@ -39,7 +42,10 @@ data class PaneSnapshot(
     val query: String = "",
     val searchResults: List<FileEntry> = emptyList(),
     val searching: Boolean = false,
-)
+    val breadcrumbs: List<Pair<String, String>> = emptyList(),
+) {
+    val isSaf: Boolean get() = path?.startsWith("content://", ignoreCase = true) == true
+}
 
 data class ExplorerUiState(
     val atHome: Boolean = true,
@@ -61,6 +67,7 @@ data class ExplorerUiState(
     val recentFiles: List<String> = emptyList(),
     val quickLocations: List<BrowserLocation> = emptyList(),
     val stats: StorageStats? = null,
+    val safLocations: List<SafLocation> = emptyList(),
     val dualPane: Boolean = false,
     val activePane: PaneId = PaneId.PRIMARY,
     val secondaryPath: String? = null,
@@ -70,6 +77,8 @@ data class ExplorerUiState(
     val secondaryQuery: String = "",
     val secondarySearchResults: List<FileEntry> = emptyList(),
     val secondarySearching: Boolean = false,
+    val currentBreadcrumbs: List<Pair<String, String>> = emptyList(),
+    val secondaryBreadcrumbs: List<Pair<String, String>> = emptyList(),
 ) {
     val primaryPane: PaneSnapshot
         get() = PaneSnapshot(
@@ -80,6 +89,7 @@ data class ExplorerUiState(
             query = query,
             searchResults = searchResults,
             searching = searching,
+            breadcrumbs = currentBreadcrumbs,
         )
 
     val secondaryPane: PaneSnapshot
@@ -91,6 +101,7 @@ data class ExplorerUiState(
             query = secondaryQuery,
             searchResults = secondarySearchResults,
             searching = secondarySearching,
+            breadcrumbs = secondaryBreadcrumbs,
         )
 
     fun pane(pane: PaneId): PaneSnapshot =
@@ -104,6 +115,8 @@ data class ExplorerUiState(
     val activeQuery: String get() = activePaneState.query
     val activeSearchResults: List<FileEntry> get() = activePaneState.searchResults
     val activeSearching: Boolean get() = activePaneState.searching
+    val activeBreadcrumbs: List<Pair<String, String>> get() = activePaneState.breadcrumbs
+    val activeIsSaf: Boolean get() = activePaneState.isSaf
     val isSearching: Boolean get() = activeQuery.isNotBlank()
     val selectedEntries: List<FileEntry>
         get() = activeEntries.filter { it.path in activeSelection } +
@@ -123,6 +136,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     private val prefs = Prefs(application)
     private val repository = FileRepository()
+    private val safRepository = SafRepository(application)
 
     private val _ui = MutableStateFlow(
         ExplorerUiState(
@@ -154,6 +168,8 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         val favorites = prefs.favorites().filter { File(it).isDirectory }
         val recentDirs = prefs.recentDirectories().filter { File(it).isDirectory }
         val recentFiles = prefs.recentFiles().filter { File(it).isFile }
+        val safLocations = prefs.safLocations()
+        safLocations.forEach(safRepository::rememberLocation)
         _ui.update {
             it.copy(
                 atHome = true,
@@ -165,13 +181,47 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                 searchResults = emptyList(),
                 searching = false,
                 loading = false,
+                currentBreadcrumbs = emptyList(),
                 favorites = favorites,
                 recentDirectories = recentDirs,
                 recentFiles = recentFiles,
                 quickLocations = StorageLocations.quickLocations(app),
                 stats = StorageLocations.statsFor(StorageLocations.primaryRoot().absolutePath),
+                safLocations = safLocations,
             )
         }
+    }
+
+    fun importSafTree(treeUri: Uri) {
+        viewModelScope.launch {
+            runCatching { safRepository.importTree(treeUri) }
+                .onSuccess { imported ->
+                    prefs.addSafLocation(imported.location)
+                    refreshHomeMetadata()
+                    emitMessage(
+                        if (imported.persisted) {
+                            "Cloud folder added."
+                        } else {
+                            "Cloud folder added for this session. Persistent access was not granted."
+                        },
+                    )
+                    openDirectory(imported.location.uri)
+                }
+                .onFailure { failure -> emitMessage(failure.userMessage()) }
+        }
+    }
+
+    fun removeSafLocation(location: SafLocation) {
+        prefs.removeSafLocation(location.uri)
+        val state = _ui.value
+        if (safRepository.isUnderTree(state.currentPath, location.uri) ||
+            safRepository.isUnderTree(state.secondaryPath, location.uri)
+        ) {
+            goHome()
+        }
+        refreshHomeMetadata()
+        viewModelScope.launch { safRepository.releaseTree(location.uri) }
+        emitMessage("Cloud location removed.")
     }
 
     fun toggleDualPane() {
@@ -236,6 +286,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         loadJobs[PaneId.PRIMARY]?.cancel()
         searchJobs[PaneId.PRIMARY]?.cancel()
         loadJobs[PaneId.PRIMARY] = viewModelScope.launch {
+            val isSaf = safRepository.isSafPath(path)
             updatePaneState(PaneId.PRIMARY) {
                 it.copy(
                     path = path,
@@ -245,16 +296,29 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                     searchResults = emptyList(),
                     searching = false,
                     selection = emptySet(),
+                    breadcrumbs = emptyList(),
                 )
             }
             _ui.update { it.copy(atHome = false) }
-            runCatching { repository.listDirectory(File(path), _ui.value.showHidden) }
+            runCatching {
+                if (isSaf) {
+                    safRepository.listDirectory(Uri.parse(path), _ui.value.showHidden)
+                } else {
+                    repository.listDirectory(File(path), _ui.value.showHidden)
+                }
+            }
                 .onSuccess { entries ->
                     val sorted = _ui.value.sort.apply(entries)
+                    val breadcrumbs = if (isSaf) safRepository.breadcrumbs(path) else emptyList()
                     updatePaneState(PaneId.PRIMARY) {
-                        it.copy(entries = sorted, loading = false, selection = emptySet())
+                        it.copy(
+                            entries = sorted,
+                            loading = false,
+                            selection = emptySet(),
+                            breadcrumbs = breadcrumbs,
+                        )
                     }
-                    if (remember) prefs.rememberDirectory(path)
+                    if (remember && !isSaf) prefs.rememberDirectory(path)
                     refreshHomeMetadata()
                     val state = _ui.value
                     if (state.dualPane && state.secondaryPath == null) {
@@ -275,6 +339,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         loadJobs[PaneId.SECONDARY]?.cancel()
         searchJobs[PaneId.SECONDARY]?.cancel()
         loadJobs[PaneId.SECONDARY] = viewModelScope.launch {
+            val isSaf = safRepository.isSafPath(path)
             updatePaneState(PaneId.SECONDARY) {
                 it.copy(
                     path = path,
@@ -284,16 +349,29 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                     searchResults = emptyList(),
                     searching = false,
                     selection = emptySet(),
+                    breadcrumbs = emptyList(),
                 )
             }
-            runCatching { repository.listDirectory(File(path), _ui.value.showHidden) }
+            runCatching {
+                if (isSaf) {
+                    safRepository.listDirectory(Uri.parse(path), _ui.value.showHidden)
+                } else {
+                    repository.listDirectory(File(path), _ui.value.showHidden)
+                }
+            }
                 .onSuccess { entries ->
                     val sorted = _ui.value.sort.apply(entries)
+                    val breadcrumbs = if (isSaf) safRepository.breadcrumbs(path) else emptyList()
                     updatePaneState(PaneId.SECONDARY) {
-                        it.copy(entries = sorted, loading = false, selection = emptySet())
+                        it.copy(
+                            entries = sorted,
+                            loading = false,
+                            selection = emptySet(),
+                            breadcrumbs = breadcrumbs,
+                        )
                     }
-                    if (remember) prefs.rememberDirectory(path)
-                    prefs.secondaryPath = path
+                    if (remember && !isSaf) prefs.rememberDirectory(path)
+                    prefs.secondaryPath = if (isSaf) null else path
                 }
                 .onFailure { failure ->
                     if (failure is CancellationException) throw failure
@@ -327,6 +405,19 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun goUpInPane(pane: PaneId) {
         setActivePaneInternal(pane)
         val path = _ui.value.pane(pane).path ?: return
+        if (safRepository.isSafPath(path)) {
+            val parent = safRepository.parentOf(path)
+            if (parent == null) {
+                if (pane == PaneId.PRIMARY) {
+                    goHome()
+                } else {
+                    setActivePaneInternal(PaneId.PRIMARY)
+                }
+            } else {
+                openDirectoryInPane(pane, parent)
+            }
+            return
+        }
         val current = File(path)
         if (current.parentFile == null ||
             StorageLocations.isStorageRoot(getApplication(), current.absolutePath)
@@ -364,7 +455,12 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         if (entry.isDirectory) {
             openDirectoryInPane(pane, entry.path)
         } else {
-            openDirectoryInPane(pane, File(entry.path).parent ?: return)
+            val parent = if (entry.isSaf) {
+                safRepository.parentOf(entry.path)
+            } else {
+                File(entry.path).parent
+            }
+            openDirectoryInPane(pane, parent ?: return)
         }
     }
 
@@ -429,27 +525,39 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
             }
             updatePaneState(pane) { it.copy(searching = true, searchResults = emptyList()) }
             val partial = ArrayList<FileEntry>()
-            val result = withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
-                repository.search(
-                    root = File(root),
-                    query = rawQuery,
-                    showHidden = _ui.value.showHidden,
-                    subfolders = _ui.value.searchSubfolders,
-                    onMatch = { entry ->
-                        partial.add(entry)
-                        if (partial.size == 1 || partial.size % 12 == 0) {
-                            if (searchRequestIds[pane] == requestId &&
-                                _ui.value.pane(pane).query == rawQuery
-                            ) {
-                                val snapshot = partial.toList()
-                                val sort = _ui.value.sort
-                                updatePaneState(pane) {
-                                    it.copy(searchResults = sort.apply(snapshot))
-                                }
-                            }
+            val onMatch: (FileEntry) -> Unit = { entry ->
+                partial.add(entry)
+                if (partial.size == 1 || partial.size % 12 == 0) {
+                    if (searchRequestIds[pane] == requestId &&
+                        _ui.value.pane(pane).query == rawQuery
+                    ) {
+                        val snapshot = partial.toList()
+                        val sort = _ui.value.sort
+                        updatePaneState(pane) {
+                            it.copy(searchResults = sort.apply(snapshot))
                         }
-                    },
-                )
+                    }
+                }
+            }
+            val isSaf = safRepository.isSafPath(root)
+            val result = withTimeoutOrNull(SEARCH_TIMEOUT_MS) {
+                if (isSaf) {
+                    safRepository.search(
+                        root = Uri.parse(root),
+                        query = rawQuery,
+                        showHidden = _ui.value.showHidden,
+                        subfolders = _ui.value.searchSubfolders,
+                        onMatch = onMatch,
+                    )
+                } else {
+                    repository.search(
+                        root = File(root),
+                        query = rawQuery,
+                        showHidden = _ui.value.showHidden,
+                        subfolders = _ui.value.searchSubfolders,
+                        onMatch = onMatch,
+                    )
+                }
             }
             if (searchRequestIds[pane] != requestId || _ui.value.pane(pane).query != rawQuery) {
                 return@launch
@@ -544,6 +652,10 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun toggleFavorite(path: String) {
+        if (safRepository.isSafPath(path)) {
+            emitMessage("Cloud folders are kept in Cloud & SAF on the home screen.")
+            return
+        }
         val added = prefs.toggleFavorite(path)
         refreshHomeMetadata()
         emitMessage(if (added) "Added to favorites." else "Removed from favorites.")
@@ -552,7 +664,11 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun createFolder(rawName: String) {
         val parent = _ui.value.activePath ?: return
         runOperation("Creating folder") {
-            repository.createFolder(File(parent), rawName)
+            if (safRepository.isSafPath(parent)) {
+                safRepository.createFolder(Uri.parse(parent), rawName)
+            } else {
+                repository.createFolder(File(parent), rawName)
+            }
             reloadVisiblePanesNow()
             emitMessage("Folder created.")
         }
@@ -561,7 +677,11 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun createFile(rawName: String) {
         val parent = _ui.value.activePath ?: return
         runOperation("Creating file") {
-            repository.createTextFile(File(parent), rawName)
+            if (safRepository.isSafPath(parent)) {
+                safRepository.createFile(Uri.parse(parent), rawName)
+            } else {
+                repository.createTextFile(File(parent), rawName)
+            }
             reloadVisiblePanesNow()
             emitMessage("File created.")
         }
@@ -569,7 +689,11 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
 
     fun rename(path: String, rawName: String) {
         runOperation("Renaming") {
-            repository.rename(File(path), rawName)
+            if (safRepository.isSafPath(path)) {
+                safRepository.rename(Uri.parse(path), rawName)
+            } else {
+                repository.rename(File(path), rawName)
+            }
             reloadVisiblePanesNow()
             emitMessage("Renamed.")
         }
@@ -578,8 +702,17 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     fun delete(paths: Collection<String>) {
         if (paths.isEmpty()) return
         runOperation("Deleting") {
-            repository.delete(paths.map(::File)) { label ->
-                _ui.update { it.copy(operation = OperationState(label)) }
+            val localPaths = paths.filterNot(safRepository::isSafPath)
+            val safPaths = paths.filter(safRepository::isSafPath)
+            if (localPaths.isNotEmpty()) {
+                repository.delete(localPaths.map(::File)) { label ->
+                    _ui.update { it.copy(operation = OperationState(label)) }
+                }
+            }
+            if (safPaths.isNotEmpty()) {
+                safRepository.delete(safPaths) { label ->
+                    _ui.update { it.copy(operation = OperationState(label)) }
+                }
             }
             reloadVisiblePanesNow()
             refreshHomeMetadata()
@@ -597,17 +730,30 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         val clipboard = _ui.value.clipboard ?: return
         val destination = _ui.value.activePath ?: return
         runOperation(if (clipboard.cut) "Moving" else "Copying") {
-            val sources = clipboard.paths.map(::File).filter { it.exists() }
+            val hasSaf = safRepository.isSafPath(destination) ||
+                clipboard.paths.any(safRepository::isSafPath)
+            val sources = clipboard.paths.filter { path ->
+                safRepository.isSafPath(path) || File(path).exists()
+            }
             if (sources.isEmpty()) {
                 _ui.update { it.copy(clipboard = null) }
                 throw IOException("The clipboard items no longer exist.")
             }
-            if (clipboard.cut) {
-                repository.move(sources, File(destination)) { label ->
+            if (hasSaf) {
+                safRepository.transfer(
+                    sources = sources,
+                    destination = destination,
+                    cut = clipboard.cut,
+                    onProgress = { label ->
+                        _ui.update { it.copy(operation = OperationState(label)) }
+                    },
+                )
+            } else if (clipboard.cut) {
+                repository.move(sources.map(::File), File(destination)) { label ->
                     _ui.update { it.copy(operation = OperationState(label)) }
                 }
             } else {
-                repository.copy(sources, File(destination)) { label ->
+                repository.copy(sources.map(::File), File(destination)) { label ->
                     _ui.update { it.copy(operation = OperationState(label)) }
                 }
             }
@@ -626,6 +772,9 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         val destination = _ui.value.activePath ?: return
         if (paths.isEmpty()) return
         runOperation("Compressing") {
+            if (safRepository.isSafPath(destination) || paths.any(safRepository::isSafPath)) {
+                throw IOException("ZIP operations are local-only in this build.")
+            }
             val suggested = if (paths.size == 1) {
                 File(paths.first()).nameWithoutExtension.ifBlank { "archive" }
             } else {
@@ -645,6 +794,9 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         val destination = _ui.value.activePath ?: return
         if (paths.isEmpty()) return
         runOperation("Extracting") {
+            if (safRepository.isSafPath(destination) || paths.any(safRepository::isSafPath)) {
+                throw IOException("ZIP operations are local-only in this build.")
+            }
             val archives = paths.map(::File).filter {
                 it.isFile && it.name.substringAfterLast('.', "").equals("zip", ignoreCase = true)
             }
@@ -668,7 +820,10 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                 ?: File(path).takeIf { it.exists() }?.let(FileEntry::from)
         }.filterNot(FileEntry::isDirectory)
         if (entries.isEmpty()) {
-            emitMessage("Folders cannot be shared directly. Compress them to a ZIP first.")
+            emitMessage(
+                "Folders cannot be shared directly. Open the folder and share the files inside it, " +
+                    "or compress local folders to a ZIP first.",
+            )
             return
         }
         _events.tryEmit(ExplorerEvent.ShareFiles(entries))
@@ -678,12 +833,15 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         val favorites = prefs.favorites().filter { File(it).isDirectory }
         val recentDirs = prefs.recentDirectories().filter { File(it).isDirectory }
         val recentFiles = prefs.recentFiles().filter { File(it).isFile }
+        val safLocations = prefs.safLocations()
+        safLocations.forEach(safRepository::rememberLocation)
         _ui.update {
             it.copy(
                 favorites = favorites,
                 recentDirectories = recentDirs,
                 recentFiles = recentFiles,
                 stats = StorageLocations.statsFor(StorageLocations.primaryRoot().absolutePath),
+                safLocations = safLocations,
             )
         }
     }
@@ -691,13 +849,26 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     private suspend fun reloadPaneNow(pane: PaneId) {
         val snapshot = _ui.value.pane(pane)
         val path = snapshot.path ?: return
-        val entries = repository.listDirectory(File(path), _ui.value.showHidden)
-        val sorted = _ui.value.sort.apply(entries)
-        updatePaneState(pane) {
-            it.copy(entries = sorted, selection = emptySet(), loading = false)
+        val isSaf = safRepository.isSafPath(path)
+        val entries = if (isSaf) {
+            safRepository.listDirectory(Uri.parse(path), _ui.value.showHidden)
+        } else {
+            repository.listDirectory(File(path), _ui.value.showHidden)
         }
-        prefs.rememberDirectory(path)
-        if (pane == PaneId.SECONDARY) prefs.secondaryPath = path
+        val sorted = _ui.value.sort.apply(entries)
+        val breadcrumbs = if (isSaf) safRepository.breadcrumbs(path) else emptyList()
+        updatePaneState(pane) {
+            it.copy(
+                entries = sorted,
+                selection = emptySet(),
+                loading = false,
+                breadcrumbs = breadcrumbs,
+            )
+        }
+        if (!isSaf) {
+            prefs.rememberDirectory(path)
+            if (pane == PaneId.SECONDARY) prefs.secondaryPath = path
+        }
         if (snapshot.query.isNotBlank()) setQueryInPane(pane, snapshot.query)
     }
 
@@ -733,6 +904,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                     query = updated.query,
                     searchResults = updated.searchResults,
                     searching = updated.searching,
+                    currentBreadcrumbs = updated.breadcrumbs,
                 )
             } else {
                 state.copy(
@@ -743,6 +915,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
                     secondaryQuery = updated.query,
                     secondarySearchResults = updated.searchResults,
                     secondarySearching = updated.searching,
+                    secondaryBreadcrumbs = updated.breadcrumbs,
                 )
             }
         }

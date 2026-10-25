@@ -1,5 +1,7 @@
 package com.shfileexplorer.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -32,6 +34,11 @@ fun ExplorerRoot(
     val scope = rememberCoroutineScope()
     var previewEntry by remember { mutableStateOf<FileEntry?>(null) }
     var initialPathOpened by rememberSaveable(initialPath) { mutableStateOf(false) }
+    val safTreePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) viewModel.importSafTree(uri)
+    }
 
     LaunchedEffect(initialPath) {
         if (!initialPathOpened && !initialPath.isNullOrBlank()) {
@@ -81,6 +88,17 @@ fun ExplorerRoot(
         darkTheme = darkTheme,
         onToggleTheme = onToggleTheme,
         onOpenAppSettings = onOpenAppSettings,
+        onPickSafFolder = {
+            runCatching { safTreePicker.launch(null) }
+                .onFailure {
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            "No document provider is available for cloud folders.",
+                            withDismissAction = true,
+                        )
+                    }
+                }
+        },
     )
 
     previewEntry?.let { entry ->
